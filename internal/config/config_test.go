@@ -13,9 +13,22 @@ func TestLoad_MissingRequired(t *testing.T) {
 	}
 }
 
+func TestLoad_MissingAuth(t *testing.T) {
+	t.Setenv("GHES_BASE_URL", "https://ghes.example.com")
+	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "")
+	t.Setenv("GITHUB_APP_ID", "")
+	t.Setenv("GITHUB_APP_INSTALLATION_ID", "")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when neither admin token nor app credentials are set")
+	}
+}
+
 func TestLoad_GHECDefaultWhenBaseURLUnset(t *testing.T) {
 	t.Setenv("GHES_BASE_URL", "")
 	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
 
 	c, err := Load()
 	if err != nil {
@@ -35,6 +48,7 @@ func TestLoad_GHECDefaultWhenBaseURLUnset(t *testing.T) {
 func TestLoad_GHECExplicitGitHubCom(t *testing.T) {
 	t.Setenv("GHES_BASE_URL", "https://github.com")
 	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
 
 	c, err := Load()
 	if err != nil {
@@ -51,6 +65,7 @@ func TestLoad_GHECExplicitGitHubCom(t *testing.T) {
 func TestLoad_GHESBaseURL(t *testing.T) {
 	t.Setenv("GHES_BASE_URL", "https://ghes.example.com/")
 	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
 
 	c, err := Load()
 	if err != nil {
@@ -66,6 +81,7 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("GITHUB_ORG", "snowflake-eng")
 	t.Setenv("GITHUB_APP_ID", "")
 	t.Setenv("GITHUB_APP_INSTALLATION_ID", "")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
 
 	c, err := Load()
 	if err != nil {
@@ -97,6 +113,7 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_InvalidDuration(t *testing.T) {
 	t.Setenv("GHES_BASE_URL", "https://ghes.example.com")
 	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
 	t.Setenv("RUNNER_POLL_INTERVAL", "not-a-duration")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for invalid duration")
@@ -106,6 +123,7 @@ func TestLoad_InvalidDuration(t *testing.T) {
 func TestLoad_InvalidInt(t *testing.T) {
 	t.Setenv("GHES_BASE_URL", "https://ghes.example.com")
 	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
 	t.Setenv("GITHUB_APP_ID", "not-a-number")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for invalid GITHUB_APP_ID")

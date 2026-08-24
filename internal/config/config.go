@@ -35,53 +35,39 @@ type Config struct {
 	Org string
 
 	// GitHub App credentials used for least-privilege polling (runner pools,
-	// cache usage, workflow runs/jobs).
+	// workflow runs/jobs). Optional for the initial launch — set
+	// GITHUB_ADMIN_TOKEN instead to use a single admin PAT for everything.
 	AppID             int64
 	AppInstallationID int64
 	AppPrivateKeyPEM  string
 
-	// AdminToken is a separate, higher-privilege PAT used only for org-wide
-	// data unavailable to the GitHub App (installed-apps inventory, audit
-	// log). It is deliberately scoped to as few calls as possible.
+	// AdminToken is a PAT used for all GitHub API calls when no GitHub App
+	// is configured. This lets the MVP launch without dealing with GitHub
+	// App/OAuth setup; swap in App credentials later for least privilege.
 	AdminToken string
 
 	// WebhookSecret validates inbound org webhook deliveries (HMAC SHA-256).
 	WebhookSecret string
 
-	// SlackWebhookURL receives incident notifications.
-	SlackWebhookURL string
-
 	// Poll intervals.
 	RunnerPollInterval   time.Duration
 	WorkflowPollInterval time.Duration
-	AppInventoryInterval time.Duration
-	HealthProbeInterval  time.Duration
-	IncidentEvalInterval time.Duration
 
 	// DBPath is the local SQLite database file path.
 	DBPath string
-
-	// OktaIssuer/OktaClientID gate the dashboard behind Okta OIDC login.
-	// Left empty in the initial admin-PAT-only launch; auth middleware
-	// no-ops until configured.
-	OktaIssuer   string
-	OktaClientID string
 }
 
 // Load reads configuration from environment variables, applying sane
 // defaults, and validates required fields for GHES operation.
 func Load() (Config, error) {
 	c := Config{
-		Port:            getEnvDefault("PORT", "8080"),
-		GHESBaseURL:     strings.TrimRight(os.Getenv("GHES_BASE_URL"), "/"),
-		Org:             os.Getenv("GITHUB_ORG"),
-		IsGHEC:          isGHECBaseURL(os.Getenv("GHES_BASE_URL")),
-		AdminToken:      os.Getenv("GITHUB_ADMIN_TOKEN"),
-		WebhookSecret:   os.Getenv("GITHUB_WEBHOOK_SECRET"),
-		SlackWebhookURL: os.Getenv("SLACK_WEBHOOK_URL"),
-		DBPath:          getEnvDefault("DB_PATH", "data/monitor.db"),
-		OktaIssuer:      os.Getenv("OKTA_ISSUER"),
-		OktaClientID:    os.Getenv("OKTA_CLIENT_ID"),
+		Port:          getEnvDefault("PORT", "8080"),
+		GHESBaseURL:   strings.TrimRight(os.Getenv("GHES_BASE_URL"), "/"),
+		Org:           os.Getenv("GITHUB_ORG"),
+		IsGHEC:        isGHECBaseURL(os.Getenv("GHES_BASE_URL")),
+		AdminToken:    os.Getenv("GITHUB_ADMIN_TOKEN"),
+		WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		DBPath:        getEnvDefault("DB_PATH", "data/monitor.db"),
 	}
 
 	var err error
@@ -103,18 +89,6 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	c.AppInventoryInterval, err = getEnvDuration("APP_INVENTORY_INTERVAL", time.Hour)
-	if err != nil {
-		return Config{}, err
-	}
-	c.HealthProbeInterval, err = getEnvDuration("HEALTH_PROBE_INTERVAL", 2*time.Minute)
-	if err != nil {
-		return Config{}, err
-	}
-	c.IncidentEvalInterval, err = getEnvDuration("INCIDENT_EVAL_INTERVAL", 30*time.Second)
-	if err != nil {
-		return Config{}, err
-	}
 
 	if err := c.Validate(); err != nil {
 		return Config{}, err
@@ -124,10 +98,14 @@ func Load() (Config, error) {
 
 // Validate ensures the minimum configuration required to run is present.
 // GHES_BASE_URL may be omitted entirely to target GitHub.com/GHEC; Org is
-// always required.
+// always required, and exactly one auth method (admin token or GitHub App)
+// must be configured.
 func (c Config) Validate() error {
 	if c.Org == "" {
 		return fmt.Errorf("GITHUB_ORG is required")
+	}
+	if c.AdminToken == "" && !c.HasAppCredentials() {
+		return fmt.Errorf("either GITHUB_ADMIN_TOKEN or GITHUB_APP_ID/GITHUB_APP_INSTALLATION_ID/GITHUB_APP_PRIVATE_KEY must be set")
 	}
 	return nil
 }

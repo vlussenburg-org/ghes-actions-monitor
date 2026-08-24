@@ -1,8 +1,8 @@
 // Package store provides a lightweight SQLite-backed persistence layer for
-// the GitHub Actions Monitor. It records workflow run/job events (from the
-// webhook feed), point-in-time snapshots (runner capacity, cache usage, app
-// inventory), health probe results, and incidents, so the dashboard can show
-// both "now" and historical trends across restarts/redeploys.
+// the GitHub Actions Monitor MVP. It records workflow run/job state (from
+// the webhook feed and/or API polling) and periodic runner capacity
+// snapshots, so the dashboard can show current job queue depth and
+// historical trends across restarts/redeploys.
 package store
 
 import (
@@ -70,41 +70,6 @@ CREATE TABLE IF NOT EXISTS runner_snapshots (
 	captured_at DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runner_snapshots_captured_at ON runner_snapshots(captured_at);
-
-CREATE TABLE IF NOT EXISTS app_inventory_snapshots (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	app_id INTEGER NOT NULL,
-	app_slug TEXT NOT NULL,
-	app_name TEXT NOT NULL,
-	installed_by TEXT NOT NULL DEFAULT '',
-	repo_selection TEXT NOT NULL DEFAULT '',
-	permissions_json TEXT NOT NULL DEFAULT '{}',
-	repo_count INTEGER NOT NULL DEFAULT 0,
-	captured_at DATETIME NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_app_inventory_captured_at ON app_inventory_snapshots(captured_at);
-
-CREATE TABLE IF NOT EXISTS health_checks (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	probe TEXT NOT NULL,
-	healthy INTEGER NOT NULL,
-	detail TEXT NOT NULL DEFAULT '',
-	latency_ms INTEGER NOT NULL DEFAULT 0,
-	checked_at DATETIME NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_health_checks_checked_at ON health_checks(checked_at);
-
-CREATE TABLE IF NOT EXISTS incidents (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	kind TEXT NOT NULL,
-	severity TEXT NOT NULL,
-	summary TEXT NOT NULL,
-	opened_at DATETIME NOT NULL,
-	closed_at DATETIME,
-	last_escalated_at DATETIME,
-	escalation_level INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_incidents_opened_at ON incidents(opened_at);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -165,6 +130,49 @@ func (s *Store) InFlightCount(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// QueueDepth reports how many distinct runs are currently queued (waiting
+// for a runner) versus already in progress, based on each run's most recent
+// recorded state. This is the primary "queue depth" signal for the
+// dashboard.
+type QueueDepth struct {
+	Queued     int
+	InProgress int
+}
+
+// QueueDepth computes the current queue depth across the org.
+func (s *Store) QueueDepth(ctx context.Context) (QueueDepth, error) {
+	const q = `
+		SELECT latest.status, COUNT(*) FROM (
+			SELECT run_id, status FROM workflow_runs w1
+			WHERE w1.id = (
+				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+			)
+		) latest
+		WHERE latest.status IN ('queued', 'in_progress')
+		GROUP BY latest.status`
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return QueueDepth{}, fmt.Errorf("query queue depth: %w", err)
+	}
+	defer rows.Close()
+
+	var d QueueDepth
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return QueueDepth{}, fmt.Errorf("scan queue depth row: %w", err)
+		}
+		switch status {
+		case "queued":
+			d.Queued = n
+		case "in_progress":
+			d.InProgress = n
+		}
+	}
+	return d, rows.Err()
+}
+
 // RecentOutcomes returns conclusion counts for runs completed within the
 // given window, used to compute success/failure trend rates.
 func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error) {
@@ -185,6 +193,29 @@ func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string
 			return nil, fmt.Errorf("scan outcome row: %w", err)
 		}
 		out[concl] = n
+	}
+	return out, rows.Err()
+}
+
+// RecentRuns returns the most recently updated workflow run states, newest
+// first, capped at limit rows. Used to populate a "recent activity" list on
+// the dashboard.
+func (s *Store) RecentRuns(ctx context.Context, limit int) ([]WorkflowRun, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT run_id, repo, name, status, conclusion, event, head_branch, source, updated_at
+		FROM workflow_runs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent runs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WorkflowRun
+	for rows.Next() {
+		var r WorkflowRun
+		if err := rows.Scan(&r.RunID, &r.Repo, &r.Name, &r.Status, &r.Conclusion, &r.Event, &r.HeadBranch, &r.Source, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan recent run row: %w", err)
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
@@ -231,184 +262,6 @@ func (s *Store) LatestRunnerSnapshots(ctx context.Context) ([]RunnerSnapshot, er
 			return nil, fmt.Errorf("scan runner snapshot: %w", err)
 		}
 		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// AppInventoryEntry is a point-in-time reading of an installed GitHub App.
-type AppInventoryEntry struct {
-	AppID           int64
-	AppSlug         string
-	AppName         string
-	InstalledBy     string
-	RepoSelection   string
-	PermissionsJSON string
-	RepoCount       int
-	CapturedAt      time.Time
-}
-
-// RecordAppInventory stores a snapshot row for one installed app.
-func (s *Store) RecordAppInventory(ctx context.Context, e AppInventoryEntry) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO app_inventory_snapshots
-			(app_id, app_slug, app_name, installed_by, repo_selection, permissions_json, repo_count, captured_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.AppID, e.AppSlug, e.AppName, e.InstalledBy, e.RepoSelection, e.PermissionsJSON, e.RepoCount, e.CapturedAt)
-	if err != nil {
-		return fmt.Errorf("record app inventory: %w", err)
-	}
-	return nil
-}
-
-// LatestAppInventory returns the most recent snapshot for every distinct
-// installed app.
-func (s *Store) LatestAppInventory(ctx context.Context) ([]AppInventoryEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT app_id, app_slug, app_name, installed_by, repo_selection, permissions_json, repo_count, captured_at
-		FROM app_inventory_snapshots a1
-		WHERE a1.id = (
-			SELECT MAX(a2.id) FROM app_inventory_snapshots a2 WHERE a2.app_id = a1.app_id
-		)
-		ORDER BY app_slug`)
-	if err != nil {
-		return nil, fmt.Errorf("query latest app inventory: %w", err)
-	}
-	defer rows.Close()
-
-	var out []AppInventoryEntry
-	for rows.Next() {
-		var e AppInventoryEntry
-		if err := rows.Scan(&e.AppID, &e.AppSlug, &e.AppName, &e.InstalledBy, &e.RepoSelection, &e.PermissionsJSON, &e.RepoCount, &e.CapturedAt); err != nil {
-			return nil, fmt.Errorf("scan app inventory row: %w", err)
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-// HealthCheck is the result of a single health probe execution.
-type HealthCheck struct {
-	Probe     string
-	Healthy   bool
-	Detail    string
-	LatencyMS int64
-	CheckedAt time.Time
-}
-
-// RecordHealthCheck stores a probe result.
-func (s *Store) RecordHealthCheck(ctx context.Context, h HealthCheck) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO health_checks (probe, healthy, detail, latency_ms, checked_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		h.Probe, h.Healthy, h.Detail, h.LatencyMS, h.CheckedAt)
-	if err != nil {
-		return fmt.Errorf("record health check: %w", err)
-	}
-	return nil
-}
-
-// LatestHealthChecks returns the most recent result for every distinct
-// probe name.
-func (s *Store) LatestHealthChecks(ctx context.Context) ([]HealthCheck, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT probe, healthy, detail, latency_ms, checked_at FROM health_checks h1
-		WHERE h1.id = (
-			SELECT MAX(h2.id) FROM health_checks h2 WHERE h2.probe = h1.probe
-		)
-		ORDER BY probe`)
-	if err != nil {
-		return nil, fmt.Errorf("query latest health checks: %w", err)
-	}
-	defer rows.Close()
-
-	var out []HealthCheck
-	for rows.Next() {
-		var h HealthCheck
-		if err := rows.Scan(&h.Probe, &h.Healthy, &h.Detail, &h.LatencyMS, &h.CheckedAt); err != nil {
-			return nil, fmt.Errorf("scan health check row: %w", err)
-		}
-		out = append(out, h)
-	}
-	return out, rows.Err()
-}
-
-// Incident represents an open or historical incident record.
-type Incident struct {
-	ID              int64
-	Kind            string
-	Severity        string
-	Summary         string
-	OpenedAt        time.Time
-	ClosedAt        sql.NullTime
-	LastEscalatedAt sql.NullTime
-	EscalationLevel int
-}
-
-// OpenIncident creates a new incident record and returns its ID.
-func (s *Store) OpenIncident(ctx context.Context, kind, severity, summary string, openedAt time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `
-		INSERT INTO incidents (kind, severity, summary, opened_at)
-		VALUES (?, ?, ?, ?)`,
-		kind, severity, summary, openedAt)
-	if err != nil {
-		return 0, fmt.Errorf("open incident: %w", err)
-	}
-	return res.LastInsertId()
-}
-
-// CloseIncident marks an incident as resolved.
-func (s *Store) CloseIncident(ctx context.Context, id int64, closedAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE incidents SET closed_at = ? WHERE id = ?`, closedAt, id)
-	if err != nil {
-		return fmt.Errorf("close incident: %w", err)
-	}
-	return nil
-}
-
-// EscalateIncident bumps an incident's escalation level and timestamp.
-func (s *Store) EscalateIncident(ctx context.Context, id int64, level int, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE incidents SET escalation_level = ?, last_escalated_at = ? WHERE id = ?`,
-		level, at, id)
-	if err != nil {
-		return fmt.Errorf("escalate incident: %w", err)
-	}
-	return nil
-}
-
-// OpenIncidentsByKind returns all currently-open (closed_at IS NULL)
-// incidents of the given kind, most recent first.
-func (s *Store) OpenIncidentsByKind(ctx context.Context, kind string) ([]Incident, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, severity, summary, opened_at, closed_at, last_escalated_at, escalation_level
-		FROM incidents WHERE kind = ? AND closed_at IS NULL ORDER BY opened_at DESC`, kind)
-	if err != nil {
-		return nil, fmt.Errorf("query open incidents: %w", err)
-	}
-	defer rows.Close()
-	return scanIncidents(rows)
-}
-
-// AllOpenIncidents returns every currently-open incident, most recent first.
-func (s *Store) AllOpenIncidents(ctx context.Context) ([]Incident, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, kind, severity, summary, opened_at, closed_at, last_escalated_at, escalation_level
-		FROM incidents WHERE closed_at IS NULL ORDER BY opened_at DESC`)
-	if err != nil {
-		return nil, fmt.Errorf("query all open incidents: %w", err)
-	}
-	defer rows.Close()
-	return scanIncidents(rows)
-}
-
-func scanIncidents(rows *sql.Rows) ([]Incident, error) {
-	var out []Incident
-	for rows.Next() {
-		var inc Incident
-		if err := rows.Scan(&inc.ID, &inc.Kind, &inc.Severity, &inc.Summary, &inc.OpenedAt, &inc.ClosedAt, &inc.LastEscalatedAt, &inc.EscalationLevel); err != nil {
-			return nil, fmt.Errorf("scan incident row: %w", err)
-		}
-		out = append(out, inc)
 	}
 	return out, rows.Err()
 }

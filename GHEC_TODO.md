@@ -1,9 +1,10 @@
 # GHEC Support TODO
 
-The GitHub Actions Monitor is designed primarily for **GHES** (GitHub
-Enterprise Server) but is built to also work against **GitHub.com / GHEC**
-with minimal configuration changes. This file tracks what already works,
-what's stubbed, and what still needs dedicated GHEC-specific handling.
+The GitHub Actions Monitor MVP targets **GHES** (GitHub Enterprise Server)
+first, scoped to: workflow run/job feed, job queue depth, and runner
+capacity. It's built so it also works against **GitHub.com / GHEC** with
+only configuration changes — no code branching required for the current
+feature set.
 
 ## How instance targeting works
 
@@ -15,27 +16,39 @@ what's stubbed, and what still needs dedicated GHEC-specific handling.
   single source of truth other packages should use — never hardcode
   `api.github.com` or a GHES path elsewhere.
 
-## Status by feature
+## Status by feature (current MVP scope)
 
 | Area | GHES | GHEC | Notes |
 |---|---|---|---|
 | REST API base URL resolution | ✅ | ✅ | `internal/config` |
 | GitHub App JWT + installation token auth | ✅ | ✅ | Same REST shape on both; uses resolved base URL. |
-| Admin PAT auth (org app inventory / audit log) | ✅ | ✅ | Same endpoints; GHES supports `/orgs/{org}/audit-log` since 3.4+. |
-| Hosted runners API (`/orgs/{org}/actions/hosted-runners`) | ⚠️ | ✅ | GHES **does not support GitHub-hosted runners** for self-hosted-only appliances in most configs — needs a feature-detect/fallback to self-hosted runner groups only (`/orgs/{org}/actions/runners`) when hosted-runners API 404s. **TODO: implement fallback + config flag.** |
-| Runner groups API | ✅ | ✅ | Same shape. |
-| Actions cache usage API | ✅ | ✅ | Same shape; confirm GHES version supports (3.5+). |
-| Workflow runs / jobs API | ✅ | ✅ | Same shape. |
-| Org webhook delivery format | ✅ | ✅ | `workflow_run` payload identical; signature header identical (`X-Hub-Signature-256`). |
-| GitHub status page probe | ✅ | ✅ | Always hits public `githubstatus.com` — this reflects GHEC/github.com status, **not** the customer's own GHES appliance health. For GHES, this probe should be reinterpreted as "is github.com reachable" rather than "is our instance down"; consider adding a GHES-specific probe (e.g. hitting the appliance's own `/api/v3` health/rate_limit endpoint) as a complementary signal. **TODO.** |
-| Git transport probe (`info/refs?service=git-upload-pack`) | ⚠️ | ✅ | Currently only implemented against `github.com/{org}/{repo}.git`. **TODO: for GHES, probe against the appliance's own git remote (`{GHES_BASE_URL}/{org}/{repo}.git`) instead/in addition.** |
-| SSH banner probe (`ssh.github.com:443`, `github.com:22`) | ⚠️ | ✅ | GHES appliances typically expose their own SSH endpoint on the appliance hostname, not `ssh.github.com`. **TODO: make SSH probe target configurable/derived from `GHES_BASE_URL` host for GHES deployments, while keeping the github.com probe for GHEC.** |
-| OAuth device flow (future, for CoCo/dashboard auth beyond admin PAT) | ❌ | ❌ | Not yet implemented for either; GHES and GHEC device-flow endpoints both live at `/login/device/code` relative to `GHES_BASE_URL` (GHES) or `github.com` (GHEC) — should generalize cleanly once added. |
-| Okta login gate | N/A | N/A | Independent of GHES/GHEC; no GitHub-instance-specific behavior. |
+| Admin PAT auth (MVP default, no OAuth) | ✅ | ✅ | Same endpoints on both. |
+| Org webhook delivery format (`workflow_run`) | ✅ | ✅ | Payload shape and `X-Hub-Signature-256` header identical. |
+| Workflow runs / jobs API polling | ✅ | ✅ | Same shape; used to backfill state the webhook feed missed. |
+| Runner groups / self-hosted runners API | ✅ | ✅ | Same shape. |
+| Hosted runners API (`/orgs/{org}/actions/hosted-runners`) | ⚠️ | ✅ | Most GHES appliances don't offer GitHub-hosted runners. **TODO: feature-detect (404 → fall back to self-hosted runner groups only) rather than assuming hosted runners exist.** |
+
+## Deferred / out of scope for this MVP
+
+The original design also covered health probes (status page, git
+transport, SSH), incident detection/escalation, Slack alerting, GitHub App
+inventory via audit log, and Okta-gated dashboard auth. These were removed
+from the current MVP scope to focus on the core signal: **jobs in flight,
+queue depth, and runner capacity**. If/when they're reintroduced, apply the
+same GHES/GHEC-aware approach:
+
+- Status page probe (`githubstatus.com`) reflects GHEC/github.com health,
+  not a GHES appliance's own health — would need a GHES-specific
+  complementary probe (e.g. the appliance's own `/api/v3` reachability).
+- Git transport probe (`info/refs?service=git-upload-pack`) and SSH banner
+  probe target `github.com`/`ssh.github.com` today; for GHES they'd need to
+  target the appliance's own git/SSH endpoints instead.
+- OAuth device flow (for CoCo/dashboard auth beyond the admin PAT) is
+  available at `/login/device/code` on both GHES (relative to
+  `GHES_BASE_URL`) and GHEC (`github.com`) and should generalize cleanly.
 
 ## Legend
 - ✅ Implemented and instance-agnostic (works for both today).
 - ⚠️ Implemented for one target only; needs follow-up work for full parity.
-- ❌ Not yet implemented for either target.
 
-Update this table as packages are built out.
+Update this table as packages are built out or scope expands.
