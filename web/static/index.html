@@ -84,6 +84,8 @@
       border-radius: var(--radius); display: none; margin: 1rem 0; padding: 0.75rem 1rem; font-size: 0.9rem;
     }
     .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 1rem 0 1.5rem; }
+    .toolbar-filters { margin-bottom: 0.75rem; }
+    .toolbar-actions { justify-content: space-between; padding-top: 0.75rem; border-top: 1px solid var(--border-soft); margin-top: 0; }
     button {
       background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
       border-radius: 7px; cursor: pointer; font: inherit; font-weight: 600; font-size: 0.86rem;
@@ -284,8 +286,9 @@
       </section>
 
       <section class="page" id="page-zombies" data-title="Zombie Runs">
-        <div class="toolbar">
-          <button id="zombies-load-btn">Reload from database</button>
+        <h2>🧟 Zombie runs</h2>
+        <p class="subtitle">Runs still <code>queued</code> or <code>in_progress</code> that haven't been updated in longer than the selected window — likely stuck waiting for a runner or abandoned by GitHub.</p>
+        <div class="toolbar toolbar-filters">
           <label for="zombies-minutes-select" class="subtitle">Stale after</label>
           <select id="zombies-minutes-select">
             <option value="30">30 minutes</option>
@@ -294,11 +297,12 @@
             <option value="360">6 hours</option>
             <option value="1440">24 hours</option>
           </select>
+          <button id="zombies-load-btn">Reload from database</button>
+        </div>
+        <div class="toolbar toolbar-actions">
           <span class="subtitle" id="zombies-status">Not loaded yet. This page only reads stored workflow runs.</span>
           <button id="zombies-copy-btn">📋 Copy support report</button>
         </div>
-        <h2>🧟 Zombie runs</h2>
-        <p class="subtitle">Runs still <code>queued</code> or <code>in_progress</code> that haven't been updated in longer than the selected window — likely stuck waiting for a runner or abandoned by GitHub.</p>
         <table id="zombies-table">
           <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Last updated</th><th>Stuck for</th><th>Actions</th></tr></thead>
           <tbody></tbody>
@@ -717,13 +721,16 @@ ${rows.join('\n')}
           el.textContent = `GitHub API rate limit exhausted. Polling may be stale until ${reset}.`;
           el.style.display = 'block';
         }
-        const generatedAt = status.generated_at ? new Date(status.generated_at) : new Date();
+        const lastSnapshot = history.length ? history[history.length - 1] : null;
+        const lastPolledAt = lastSnapshot ? new Date(lastSnapshot.CapturedAt) : null;
         githubBaseURL = (status.github_base_url || 'https://github.com').replace(/\/+$/, '');
         orgName = status.org || '';
-        document.getElementById('org-line').textContent =
-          `Org: ${status.org || '(unset)'} - updated ${generatedAt.toLocaleString()}`;
-        document.getElementById('sidebar-updated').textContent =
-          `${Math.max(0, Math.round((Date.now() - generatedAt.getTime()) / 60000))}m ago`;
+        document.getElementById('org-line').textContent = lastPolledAt
+          ? `Org: ${status.org || '(unset)'} - last polled ${lastPolledAt.toLocaleString()}`
+          : `Org: ${status.org || '(unset)'} - no poll data yet`;
+        document.getElementById('sidebar-updated').textContent = lastPolledAt
+          ? `${Math.max(0, Math.round((Date.now() - lastPolledAt.getTime()) / 60000))}m ago`
+          : '—';
         const activeCount = status.queue_depth?.InProgress ?? 0;
         const queuedCount = status.queue_depth?.Queued ?? 0;
         document.getElementById('nav-active').textContent = activeCount;
