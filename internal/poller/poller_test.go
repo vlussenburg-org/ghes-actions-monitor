@@ -83,20 +83,22 @@ func (f *fakeGitHubClient) ListRunnerGroupRunners(ctx context.Context, org strin
 }
 
 type fakeStore struct {
-	mu                sync.Mutex
-	runs              []store.WorkflowRun
-	runSnapshots      []store.RunnerSnapshot
-	queueDepthSnaps   []store.QueueDepthSnapshot
-	runErr            error
-	snapErr           error
-	queueDepthErr     error
-	queueDepthSnapErr error
-	closeStaleErr     error
-	queueDepth        store.QueueDepth
-	closedRepos       []string
-	closedActiveIDs   map[int64]struct{}
-	activeRepos       []string
-	activeReposErr    error
+	mu                    sync.Mutex
+	runs                  []store.WorkflowRun
+	runSnapshots          []store.RunnerSnapshot
+	queueDepthSnaps       []store.QueueDepthSnapshot
+	runErr                error
+	snapErr               error
+	queueDepthErr         error
+	queueDepthSnapErr     error
+	closeStaleErr         error
+	queueDepth            store.QueueDepth
+	closedRepos           []string
+	closedActiveIDs       map[int64]struct{}
+	activeRepos           []string
+	activeReposErr        error
+	activeReposCalls      int
+	activeReposAfterFirst []string
 }
 
 func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error {
@@ -155,6 +157,10 @@ func (f *fakeStore) RecentlyActiveRepos(ctx context.Context, since time.Time) ([
 	if f.activeReposErr != nil {
 		return nil, f.activeReposErr
 	}
+	f.activeReposCalls++
+	if f.activeReposCalls > 1 && f.activeReposAfterFirst != nil {
+		return f.activeReposAfterFirst, nil
+	}
 	return f.activeRepos, nil
 }
 
@@ -185,6 +191,47 @@ func TestPollWorkflowRuns_HappyPath(t *testing.T) {
 	}
 	if !st.runs[0].UpdatedAt.Equal(fixedTime) {
 		t.Errorf("expected fallback time used, got %v", st.runs[0].UpdatedAt)
+	}
+}
+
+func TestPollWorkflowRuns_BootstrapsHistoryWhenNoRecentlyActiveRepos(t *testing.T) {
+	client := &fakeGitHubClient{
+		repos: []string{"widgets"},
+		recentRuns: map[string][]*github.WorkflowRun{
+			"widgets": {
+				{ID: github.Int64(101), Name: strPtr("CI"), Status: strPtr("completed"), Conclusion: strPtr("success")},
+			},
+		},
+	}
+	st := &fakeStore{
+		activeRepos:           nil,
+		activeReposAfterFirst: []string{"acme/widgets"},
+	}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollWorkflowRuns(context.Background())
+
+	if client.listReposCalls != 1 {
+		t.Errorf("expected pollHistory bootstrap to call ListRepos once, got %d", client.listReposCalls)
+	}
+	if len(st.runs) != 1 || st.runs[0].RunID != 101 {
+		t.Fatalf("expected bootstrap to store the historic run, got %+v", st.runs)
+	}
+	if !p.bootstrapped.Load() {
+		t.Error("expected bootstrapped flag to be set")
+	}
+}
+
+func TestPollWorkflowRuns_DoesNotRebootstrapOnSubsequentEmptyCycles(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	st := &fakeStore{activeRepos: nil}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollWorkflowRuns(context.Background())
+	p.pollWorkflowRuns(context.Background())
+
+	if client.listReposCalls != 1 {
+		t.Errorf("expected bootstrap to run at most once across cycles, got %d ListRepos calls", client.listReposCalls)
 	}
 }
 

@@ -92,12 +92,12 @@ func (a *GHClientAdapter) ListActiveWorkflowRuns(ctx context.Context, owner, rep
 }
 
 // ListRecentWorkflowRuns returns one page of the most recent workflow runs
-// for the given repo from the last 7 days, regardless of status, so
+// for the given repo from the last 24 hours, regardless of status, so
 // completed/historic runs are captured too (not just active ones).
 // Deliberately unpaginated for now — a single 100-result page per repo is
 // enough for the MVP's "recent history" view.
 func (a *GHClientAdapter) ListRecentWorkflowRuns(ctx context.Context, owner, repo string) ([]*github.WorkflowRun, error) {
-	since := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+	since := time.Now().Add(-24 * time.Hour).Format("2006-01-02")
 	opts := &github.ListWorkflowRunsOptions{
 		Created:     ">=" + since,
 		ListOptions: github.ListOptions{PerPage: 100},

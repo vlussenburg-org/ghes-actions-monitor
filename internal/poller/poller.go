@@ -3,7 +3,11 @@
 // scoped to only the repos webhooks say have had recent job activity (as a
 // backstop for missed or delayed webhook deliveries on repos that are
 // actually in use), a manual refresh-only sweep of each repo's recent run
-// history regardless of status, and runner group capacity for the org.
+// history regardless of status, and runner group capacity for the org. If
+// the spot-check window ever finds no recently active repos at all (a fresh
+// install with an empty store, or a quiet window with no webhook deliveries
+// yet), it falls back to one one-time full-org history sweep to bootstrap
+// the store.
 package poller
 
 import (
@@ -11,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-github/v66/github"
@@ -71,6 +76,12 @@ type Poller struct {
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
+
+	// bootstrapped is set once pollWorkflowRuns has run pollHistory as a
+	// one-time fallback to seed the store when the spot-check window found
+	// no recently active repos (e.g. a fresh install with an empty store,
+	// or a quiet window with no webhook deliveries yet).
+	bootstrapped atomic.Bool
 }
 
 // RefreshNow runs one immediate pass of every poll sweep (active workflow
@@ -167,6 +178,22 @@ func (p *Poller) pollWorkflowRuns(ctx context.Context) {
 		return
 	}
 
+	if len(repos) == 0 && p.bootstrapped.CompareAndSwap(false, true) {
+		// Nothing recently active yet — either a fresh install with an
+		// empty store, or a quiet window with no webhook deliveries. Seed
+		// the store with one full-org history sweep so the spot-check
+		// window has something to work with going forward. Only ever done
+		// once per process lifetime to avoid degrading into a full sweep
+		// every cycle.
+		p.logger().Info("poll: no recently active repos found, running one-time history bootstrap")
+		p.pollHistory(ctx)
+		repos, err = p.Store.RecentlyActiveRepos(ctx, since)
+		if err != nil {
+			p.logger().Error("poll: failed to list recently active repos after bootstrap", "error", err)
+			return
+		}
+	}
+
 	activeRunIDs := map[int64]struct{}{}
 	var scannedRepos []string
 	for _, fullRepo := range repos {
@@ -251,10 +278,13 @@ func (p *Poller) pollRunners(ctx context.Context) {
 	}
 }
 
-// pollHistory sweeps every repo in the org for its recent (last 7 days)
+// pollHistory sweeps every repo in the org for its recent (last 24 hours)
 // workflow runs regardless of status, so completed/historic runs show up
-// in the dashboard even without a webhook delivering them live. It is only
-// invoked by manual refresh because it is heavier than the active-run sweep.
+// in the dashboard even without a webhook delivering them live. It is
+// invoked by manual refresh, and automatically once by pollWorkflowRuns as a
+// one-time bootstrap if the spot-check window ever finds no recently active
+// repos at all; otherwise it is heavier than the active-run sweep and is
+// not scheduled on its own.
 func (p *Poller) pollHistory(ctx context.Context) {
 	if p.skipForRateLimit("history") {
 		return
