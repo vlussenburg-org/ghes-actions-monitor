@@ -5,79 +5,216 @@
   <title>GitHub Actions Monitor</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; max-width: 960px; }
-    h1 { margin-bottom: 0.25rem; }
-    .subtitle { color: #666; margin-top: 0; }
+    :root {
+      color-scheme: dark;
+      --bg: #111827;
+      --panel: #1f2937;
+      --panel-2: #273244;
+      --sidebar: #20283a;
+      --sidebar-dark: #1a2232;
+      --border: #374151;
+      --muted: #9ca3af;
+      --text: #f3f4f6;
+      --active: #6bd376;
+      --queued: #f2cc59;
+      --danger: #fb7185;
+      --blue: #4f7cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .app { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+    .sidebar {
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+    .brand { display: flex; gap: 0.8rem; align-items: center; padding: 1.4rem 1.25rem; border-bottom: 1px solid var(--border); }
+    .brand-icon {
+      width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
+      background: #fff; color: #111827; font-size: 1.4rem;
+    }
+    .brand strong { display: block; }
+    .brand small { color: var(--muted); }
+    .nav { padding: 1rem; }
+    .nav h3 {
+      color: #7f8aa3; font-size: 0.72rem; letter-spacing: 0.12em;
+      margin: 1.3rem 0 0.5rem; text-transform: uppercase;
+    }
+    .nav-item {
+      border-radius: 8px; color: #cbd5e1; display: flex; align-items: center;
+      gap: 0.7rem; padding: 0.72rem 0.8rem; margin: 0.25rem 0; text-decoration: none;
+    }
+    .nav-item.selected { background: #485268; color: #fff; font-weight: 700; }
+    .badge {
+      margin-left: auto; border-radius: 999px; padding: 0.12rem 0.5rem;
+      font-size: 0.72rem; font-weight: 700;
+    }
+    .badge.active { background: rgba(107, 211, 118, 0.25); color: var(--active); }
+    .badge.queued { background: rgba(242, 204, 89, 0.22); color: var(--queued); }
+    .sidebar-footer {
+      margin-top: auto; border-top: 1px solid var(--border); color: var(--muted);
+      padding: 1rem; display: flex; justify-content: space-between; align-items: center;
+      font-size: 0.85rem;
+    }
+    .main { padding: 2rem; overflow: auto; }
+    h1 { font-size: 1.9rem; margin: 0 0 0.35rem; }
+    .subtitle { color: var(--muted); margin: 0 0 1rem; }
+    #error {
+      color: #fecdd3; background: rgba(251, 113, 133, 0.14); border: 1px solid rgba(251, 113, 133, 0.35);
+      border-radius: 8px; display: none; margin: 1rem 0; padding: 0.75rem;
+    }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0 1.5rem; }
+    button {
+      background: #4b5563; color: #f9fafb; border: 1px solid #5b6473;
+      border-radius: 7px; cursor: pointer; font: inherit; font-weight: 650;
+      padding: 0.55rem 0.9rem;
+    }
+    button:hover:not(:disabled) { background: #5b6575; }
+    button.selected { background: var(--blue); border-color: #7695ff; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
-    .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; }
-    .card .value { font-size: 2rem; font-weight: 600; }
-    .card .label { color: #666; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
-    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-    th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
-    .status-success { color: #1a7f37; }
-    .status-failure { color: #cf222e; }
-    .status-in_progress, .status-queued { color: #9a6700; }
-    th.sortable { cursor: pointer; user-select: none; }
-    th.sortable:hover { color: #0969da; }
-    th.sortable .arrow { opacity: 0.5; font-size: 0.75em; }
-    .pagination { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; font-size: 0.9rem; }
-    .pagination button { padding: 0.25rem 0.75rem; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+    .card .value { font-size: 2rem; font-weight: 750; }
+    .card .label { color: var(--muted); font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+    .chart-shell {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem;
+    }
+    .chart-legend { display: flex; justify-content: center; gap: 2rem; font-size: 0.9rem; margin-bottom: 0.75rem; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: 0.45rem; font-weight: 650; }
+    .chart-legend .swatch { width: 44px; height: 16px; border-radius: 2px; border: 3px solid currentColor; display: inline-block; }
+    #queue-chart { width: 100%; height: 320px; display: block; }
     section { margin-bottom: 2rem; }
-    #error { color: #cf222e; display: none; }
-    .chart-legend { display: flex; gap: 1.25rem; font-size: 0.85rem; margin-top: 0.5rem; }
-    .chart-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
-    .chart-legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-    #queue-chart { border: 1px solid #ccc; border-radius: 8px; width: 100%; height: 220px; }
+    table {
+      border-collapse: separate;
+      border-spacing: 0;
+      width: 100%;
+      overflow: hidden;
+      background: var(--panel-2);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    th, td { text-align: left; padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+    th { background: #f8fafc; color: #a0a7b4; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    tbody tr:last-child td { border-bottom: 0; }
+    .status-success, .status-operational, .active-text { color: var(--active); font-weight: 750; }
+    .status-failure { color: var(--danger); font-weight: 750; }
+    .status-in_progress, .status-queued, .queued-text { color: var(--queued); font-weight: 750; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { color: #334155; }
+    th.sortable .arrow { opacity: 0.7; font-size: 0.75em; }
+    .pagination { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; font-size: 0.9rem; color: var(--muted); }
+    .two-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+    @media (max-width: 820px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .main { padding: 1rem; }
+    }
   </style>
 </head>
 <body>
-  <h1>GitHub Actions Monitor</h1>
-  <p class="subtitle" id="org-line">Loading…</p>
-  <p><button id="refresh-btn">Force refresh</button></p>
-  <p id="error"></p>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">GH</div>
+        <div>
+          <strong>Runner Monitor</strong>
+          <small>GitHub Actions - SRE</small>
+        </div>
+      </div>
+      <nav class="nav">
+        <h3>Overview</h3>
+        <a class="nav-item" href="#dashboard">Dashboard <span class="badge active" id="nav-total">0</span></a>
+        <h3>Jobs</h3>
+        <a class="nav-item" href="#active">Active Jobs <span class="badge active" id="nav-active">0</span></a>
+        <a class="nav-item" href="#queued">Queued Jobs <span class="badge queued" id="nav-queued">0</span></a>
+        <a class="nav-item selected" href="#history">History</a>
+        <a class="nav-item" href="#outages">Outage Log</a>
+        <a class="nav-item" href="#users">Users</a>
+        <h3>Insights</h3>
+        <a class="nav-item" href="#cache">Cache Health</a>
+        <a class="nav-item" href="#workflow">Workflow Health</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="sidebar-updated">Loading...</span>
+        <button id="refresh-btn" title="Force refresh">Refresh</button>
+      </div>
+    </aside>
 
-  <section class="grid" id="summary-cards"></section>
+    <main class="main">
+      <h1>History</h1>
+      <p class="subtitle" id="org-line">Active and queued job counts over time. Loading...</p>
+      <p id="error"></p>
 
-  <section>
-    <h2>Queued vs running (last 24h)</h2>
-    <canvas id="queue-chart" width="900" height="220"></canvas>
-    <div class="chart-legend">
-      <span><span class="swatch" style="background:#9a6700"></span> Queued</span>
-      <span><span class="swatch" style="background:#1a7f37"></span> In progress</span>
-    </div>
-  </section>
+      <div class="toolbar" id="range-toolbar">
+        <button data-hours="1">1h</button>
+        <button data-hours="6">6h</button>
+        <button data-hours="24" class="selected">24h</button>
+        <button data-hours="72">3d</button>
+        <button data-hours="168">7d</button>
+        <button data-hours="168">All</button>
+        <button id="now-btn">Now</button>
+      </div>
 
-  <section>
-    <h2>Runner groups</h2>
-    <table id="runners-table">
-      <thead><tr><th>Group</th><th>Total</th><th>Busy</th><th>Idle</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+      <section class="chart-shell">
+        <div class="chart-legend">
+          <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
+          <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
+        </div>
+        <canvas id="queue-chart" width="1100" height="320"></canvas>
+      </section>
 
-  <section>
-    <h2>Recent workflow runs</h2>
-    <table id="runs-table">
-      <thead><tr>
-        <th class="sortable" data-sort="repo">Repo <span class="arrow"></span></th>
-        <th class="sortable" data-sort="name">Workflow <span class="arrow"></span></th>
-        <th>Branch</th>
-        <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
-        <th class="sortable" data-sort="conclusion">Conclusion <span class="arrow"></span></th>
-        <th class="sortable" data-sort="updated_at">Updated <span class="arrow"></span></th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-    <div class="pagination">
-      <button id="prev-page">← Prev</button>
-      <span id="page-info"></span>
-      <button id="next-page">Next →</button>
-    </div>
-  </section>
+      <section>
+        <table id="scan-table">
+          <thead><tr><th>Scan Time</th><th>Active</th><th>Queued</th><th>Total</th><th>Actions Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section class="grid" id="summary-cards"></section>
+
+      <section>
+        <h2>Runner groups</h2>
+        <table id="runners-table">
+          <thead><tr><th>Group</th><th>Total</th><th>Busy</th><th>Idle</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>Recent workflow runs</h2>
+        <table id="runs-table">
+          <thead><tr>
+            <th class="sortable" data-sort="repo">Repo <span class="arrow"></span></th>
+            <th class="sortable" data-sort="name">Workflow <span class="arrow"></span></th>
+            <th>Branch</th>
+            <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
+            <th class="sortable" data-sort="conclusion">Conclusion <span class="arrow"></span></th>
+            <th class="sortable" data-sort="updated_at">Updated <span class="arrow"></span></th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="pagination">
+          <button id="prev-page">Prev</button>
+          <span id="page-info"></span>
+          <button id="next-page">Next</button>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <script>
     const runsState = { page: 1, limit: 25, sort: 'updated_at', order: 'desc', total: 0 };
+    const historyState = { hours: 24 };
 
     async function fetchJSON(path) {
       const res = await fetch(path);
@@ -96,7 +233,7 @@
       document.querySelectorAll('#runs-table th.sortable').forEach((th) => {
         const arrow = th.querySelector('.arrow');
         if (th.dataset.sort === runsState.sort) {
-          arrow.textContent = runsState.order === 'asc' ? '▲' : '▼';
+          arrow.textContent = runsState.order === 'asc' ? '^' : 'v';
         } else {
           arrow.textContent = '';
         }
@@ -110,38 +247,48 @@
       ctx.clearRect(0, 0, w, h);
 
       if (!history || history.length === 0) {
-        ctx.fillStyle = '#666';
-        ctx.font = '13px sans-serif';
-        ctx.fillText('No data yet', 10, h / 2);
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('No queue depth snapshots yet', 24, h / 2);
         return;
       }
 
-      const padding = { top: 10, right: 10, bottom: 20, left: 30 };
+      const padding = { top: 18, right: 18, bottom: 34, left: 44 };
       const plotW = w - padding.left - padding.right;
       const plotH = h - padding.top - padding.bottom;
-
       const times = history.map((p) => new Date(p.CapturedAt).getTime());
       const minT = Math.min(...times), maxT = Math.max(...times);
       const maxVal = Math.max(1, ...history.map((p) => Math.max(p.Queued, p.InProgress)));
+      const yMax = Math.ceil(maxVal / 5) * 5;
+      const x = (t) => padding.left + (maxT === minT ? plotW : ((t - minT) / (maxT - minT)) * plotW);
+      const y = (v) => padding.top + plotH - (v / yMax) * plotH;
 
-      const x = (t) => padding.left + (maxT === minT ? 0 : ((t - minT) / (maxT - minT)) * plotW);
-      const y = (v) => padding.top + plotH - (v / maxVal) * plotH;
-
-      // Axes.
-      ctx.strokeStyle = '#ddd';
-      ctx.beginPath();
-      ctx.moveTo(padding.left, padding.top);
-      ctx.lineTo(padding.left, padding.top + plotH);
-      ctx.lineTo(padding.left + plotW, padding.top + plotH);
-      ctx.stroke();
-      ctx.fillStyle = '#666';
-      ctx.font = '10px sans-serif';
-      ctx.fillText(String(maxVal), 2, padding.top + 8);
-      ctx.fillText('0', 2, padding.top + plotH);
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#9ca3af';
+      ctx.font = '12px sans-serif';
+      for (let i = 0; i <= 5; i++) {
+        const value = Math.round((yMax / 5) * i);
+        const py = y(value);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, py);
+        ctx.lineTo(padding.left + plotW, py);
+        ctx.stroke();
+        ctx.fillText(String(value), 8, py + 4);
+      }
+      for (let i = 0; i <= 6; i++) {
+        const t = minT + ((maxT - minT) / 6) * i;
+        const px = padding.left + (plotW / 6) * i;
+        ctx.beginPath();
+        ctx.moveTo(px, padding.top);
+        ctx.lineTo(px, padding.top + plotH);
+        ctx.stroke();
+        ctx.fillText(new Date(t).toLocaleTimeString([], { hour: 'numeric' }), px - 10, h - 10);
+      }
 
       function drawLine(key, color) {
         ctx.strokeStyle = color;
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 3;
         ctx.beginPath();
         history.forEach((p, i) => {
           const px = x(new Date(p.CapturedAt).getTime());
@@ -150,8 +297,14 @@
         });
         ctx.stroke();
       }
-      drawLine('Queued', '#9a6700');
-      drawLine('InProgress', '#1a7f37');
+      drawLine('InProgress', '#6bd376');
+      drawLine('Queued', '#f2cc59');
+    }
+
+    function updateRangeButtons() {
+      document.querySelectorAll('#range-toolbar button[data-hours]').forEach((btn) => {
+        btn.classList.toggle('selected', Number(btn.dataset.hours) === historyState.hours && btn.textContent !== 'All');
+      });
     }
 
     async function refresh() {
@@ -166,14 +319,22 @@
           fetchJSON('/api/status'),
           fetchJSON('/api/runners'),
           fetchJSON(`/api/runs/recent?${runsQuery}`),
-          fetchJSON('/api/queue-depth/history?hours=24'),
+          fetchJSON(`/api/queue-depth/history?hours=${historyState.hours}`),
         ]);
 
-        drawQueueChart(queueHistory.history || []);
+        const history = queueHistory.history || [];
+        drawQueueChart(history);
+        updateRangeButtons();
 
         document.getElementById('error').style.display = 'none';
+        const generatedAt = status.generated_at ? new Date(status.generated_at) : new Date();
         document.getElementById('org-line').textContent =
-          `Org: ${status.org || '(unset)'} · updated ${new Date(status.generated_at).toLocaleTimeString()}`;
+          `Org: ${status.org || '(unset)'} - updated ${generatedAt.toLocaleString()}`;
+        document.getElementById('sidebar-updated').textContent =
+          `${Math.max(0, Math.round((Date.now() - generatedAt.getTime()) / 60000))}m ago`;
+        document.getElementById('nav-active').textContent = status.queue_depth?.in_progress ?? 0;
+        document.getElementById('nav-queued').textContent = status.queue_depth?.queued ?? 0;
+        document.getElementById('nav-total').textContent = status.in_flight ?? 0;
 
         const cards = document.getElementById('summary-cards');
         cards.innerHTML = '';
@@ -184,6 +345,19 @@
           card('Success (1h)', status.recent_outcomes_1h?.success ?? 0),
           card('Failure (1h)', status.recent_outcomes_1h?.failure ?? 0),
         );
+
+        const scanBody = document.querySelector('#scan-table tbody');
+        scanBody.innerHTML = '';
+        for (const p of [...history].reverse().slice(0, 12)) {
+          const tr = document.createElement('tr');
+          const total = (p.Queued || 0) + (p.InProgress || 0);
+          tr.innerHTML = `<td>${p.CapturedAt ? new Date(p.CapturedAt).toLocaleString() : ''}</td>` +
+            `<td class="active-text">${p.InProgress ?? 0}</td>` +
+            `<td class="queued-text">${p.Queued ?? 0}</td>` +
+            `<td>${total}</td>` +
+            `<td class="status-operational">operational</td>`;
+          scanBody.append(tr);
+        }
 
         const runnersBody = document.querySelector('#runners-table tbody');
         runnersBody.innerHTML = '';
@@ -225,7 +399,7 @@
       const btn = e.currentTarget;
       btn.disabled = true;
       const originalText = btn.textContent;
-      btn.textContent = 'Refreshing…';
+      btn.textContent = 'Refreshing...';
       try {
         const res = await fetch('/api/refresh', { method: 'POST' });
         if (!res.ok) throw new Error(`refresh returned ${res.status}`);
@@ -240,6 +414,16 @@
       }
     });
 
+    document.querySelectorAll('#range-toolbar button[data-hours]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        historyState.hours = Number(btn.dataset.hours);
+        refresh();
+      });
+    });
+    document.getElementById('now-btn').addEventListener('click', () => {
+      historyState.hours = 24;
+      refresh();
+    });
     document.getElementById('prev-page').addEventListener('click', () => {
       if (runsState.page > 1) { runsState.page -= 1; refresh(); }
     });
