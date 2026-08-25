@@ -26,6 +26,8 @@ type fakeStore struct {
 	recentRunsErr  error
 	runnerSnaps    []store.RunnerSnapshot
 	runnerSnapsErr error
+	zombieRuns     []store.WorkflowRun
+	zombieRunsErr  error
 
 	lastOpts         store.RecentRunsOptions
 	lastSince        time.Time
@@ -72,6 +74,10 @@ func (f *fakeStore) RecentOutcomes(ctx context.Context, since time.Time) (map[st
 
 func (f *fakeStore) LatestRunnerSnapshots(ctx context.Context) ([]store.RunnerSnapshot, error) {
 	return f.runnerSnaps, f.runnerSnapsErr
+}
+
+func (f *fakeStore) ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]store.WorkflowRun, error) {
+	return f.zombieRuns, f.zombieRunsErr
 }
 
 func TestHandleHealthz(t *testing.T) {

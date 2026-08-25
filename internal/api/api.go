@@ -23,6 +23,7 @@ type Store interface {
 	RecentRuns(ctx context.Context, opts store.RecentRunsOptions) ([]store.WorkflowRun, int, error)
 	RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error)
 	LatestRunnerSnapshots(ctx context.Context) ([]store.RunnerSnapshot, error)
+	ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]store.WorkflowRun, error)
 }
 
 // Refresher lets the API trigger an immediate, out-of-band poll sweep (used
@@ -73,6 +74,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/runs/recent", s.handleRecentRuns)
 	mux.HandleFunc("GET /api/runners", s.handleRunners)
 	mux.HandleFunc("GET /api/queue-depth/history", s.handleQueueDepthHistory)
+	mux.HandleFunc("GET /api/runs/zombies", s.handleZombieRuns)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /api/runs/{run_id}/cancel", s.handleCancelRun)
 	return mux
@@ -251,6 +253,28 @@ func (s *Server) handleQueueDepthHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"history": history})
+}
+
+// handleZombieRuns returns workflow runs that are still queued/in_progress
+// but haven't been updated in a long time — GET /api/runs/zombies?minutes=N
+// (default 60, capped at 10080 = 7 days).
+func (s *Server) handleZombieRuns(w http.ResponseWriter, r *http.Request) {
+	minutes := 60
+	if v := r.URL.Query().Get("minutes"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			minutes = n
+		}
+	}
+	if minutes > 10080 {
+		minutes = 10080
+	}
+
+	runs, err := s.Store.ZombieRuns(r.Context(), time.Duration(minutes)*time.Minute, s.now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch zombie runs")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs, "stale_after_minutes": minutes})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

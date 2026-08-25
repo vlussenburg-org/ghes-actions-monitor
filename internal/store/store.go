@@ -384,6 +384,39 @@ func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]Workf
 	return out, total, nil
 }
 
+// ZombieRuns returns workflow runs whose most recent recorded state is
+// still "queued" or "in_progress" but hasn't been updated in over
+// staleAfter — i.e. runs that are likely stuck (no runner picked them up,
+// or a job hung and GitHub never sent a completion event). Ordered oldest
+// (most stale) first.
+func (s *Store) ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]WorkflowRun, error) {
+	cutoff := now.Add(-staleAfter)
+	const q = `
+		SELECT run_id, repo, name, status, conclusion, event, head_branch, source, updated_at
+		FROM workflow_runs w1
+		WHERE w1.id = (
+			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+		)
+		AND status IN ('queued', 'in_progress')
+		AND updated_at <= ?
+		ORDER BY updated_at ASC`
+	rows, err := s.db.QueryContext(ctx, q, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("query zombie runs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WorkflowRun
+	for rows.Next() {
+		var r WorkflowRun
+		if err := rows.Scan(&r.RunID, &r.Repo, &r.Name, &r.Status, &r.Conclusion, &r.Event, &r.HeadBranch, &r.Source, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan zombie run row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // QueueDepthSnapshot is a point-in-time reading of org-wide queued vs
 // in-progress workflow run counts, recorded periodically so the dashboard
 // can render a queued-vs-running time series.

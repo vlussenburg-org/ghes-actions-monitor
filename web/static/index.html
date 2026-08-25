@@ -157,6 +157,7 @@
         <button class="nav-item" data-page="historic-runs"><span class="nav-icon" aria-hidden="true">📜</span>Historic Runs</button>
         <h3>Infrastructure</h3>
         <button class="nav-item" data-page="runners"><span class="nav-icon" aria-hidden="true">🖥️</span>Runner Groups</button>
+        <button class="nav-item" data-page="zombies"><span class="nav-icon" aria-hidden="true">🧟</span>Zombie Runs <span class="badge queued" id="nav-zombies">0</span></button>
       </nav>
       <div class="sidebar-footer">
         <span id="sidebar-updated">Loading...</span>
@@ -248,6 +249,27 @@
           <button id="historic-next-btn">Next</button>
         </div>
       </section>
+
+      <section class="page" id="page-zombies" data-title="Zombie Runs">
+        <div class="toolbar">
+          <button id="zombies-load-btn">Reload from database</button>
+          <label for="zombies-minutes-select" class="subtitle">Stale after</label>
+          <select id="zombies-minutes-select">
+            <option value="30">30 minutes</option>
+            <option value="60" selected>1 hour</option>
+            <option value="180">3 hours</option>
+            <option value="360">6 hours</option>
+            <option value="1440">24 hours</option>
+          </select>
+          <span class="subtitle" id="zombies-status">Not loaded yet. This page only reads stored workflow runs.</span>
+        </div>
+        <h2>🧟 Zombie runs</h2>
+        <p class="subtitle">Runs still <code>queued</code> or <code>in_progress</code> that haven't been updated in longer than the selected window — likely stuck waiting for a runner or abandoned by GitHub.</p>
+        <table id="zombies-table">
+          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Last updated</th><th>Stuck for</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
     </main>
   </div>
 
@@ -255,6 +277,7 @@
     const historyState = { hours: 24, range: '24h' };
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
+    const zombiesState = { loaded: false, minutes: 60 };
     let githubBaseURL = 'https://github.com';
     const pageNames = {
       dashboard: 'History',
@@ -262,6 +285,7 @@
       queued: 'Queued Jobs',
       'historic-runs': 'Historic Runs',
       runners: 'Runner Groups',
+      zombies: 'Zombie Runs',
     };
     const pageAliases = { history: 'dashboard' };
 
@@ -373,6 +397,9 @@
       }
       if (page === 'runners' && !runnersState.loaded) {
         loadRunners();
+      }
+      if (page === 'zombies' && !zombiesState.loaded) {
+        loadZombies();
       }
     }
 
@@ -508,6 +535,65 @@
       }
     }
 
+    function formatDuration(ms) {
+      const totalMinutes = Math.floor(ms / 60000);
+      const days = Math.floor(totalMinutes / 1440);
+      const hours = Math.floor((totalMinutes % 1440) / 60);
+      const minutes = totalMinutes % 60;
+      const parts = [];
+      if (days) parts.push(`${days}d`);
+      if (hours) parts.push(`${hours}h`);
+      if (minutes || parts.length === 0) parts.push(`${minutes}m`);
+      return parts.join(' ');
+    }
+
+    function renderZombies(runs) {
+      const body = document.querySelector('#zombies-table tbody');
+      body.innerHTML = '';
+      document.getElementById('nav-zombies').textContent = runs ? runs.length : 0;
+      if (!runs || runs.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="7">No zombie runs right now 🎉</td>';
+        body.append(tr);
+        return;
+      }
+      const now = Date.now();
+      for (const r of runs) {
+        const tr = document.createElement('tr');
+        const repo = escapeHTML(r.Repo);
+        const name = escapeHTML(r.Name);
+        const branch = escapeHTML(r.HeadBranch);
+        const status = escapeHTML(r.Status);
+        const runURL = `${githubBaseURL}/${encodeURI(r.Repo)}/actions/runs/${encodeURIComponent(r.RunID)}`;
+        const updatedAt = r.UpdatedAt ? new Date(r.UpdatedAt) : null;
+        const stuckFor = updatedAt ? formatDuration(now - updatedAt.getTime()) : '-';
+        tr.innerHTML = `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${repo}</a></td>` +
+          `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${name}</a></td>` +
+          `<td>${branch}</td>` +
+          `<td class="status-${status}">${status}</td>` +
+          `<td>${updatedAt ? updatedAt.toLocaleString() : ''}</td>` +
+          `<td>${stuckFor}</td>` +
+          `<td><button class="cancel-btn" data-repo="${repo}" data-run-id="${escapeHTML(r.RunID)}">Cancel</button>` +
+          ` <button class="force-cancel-btn" data-repo="${repo}" data-run-id="${escapeHTML(r.RunID)}">Force cancel</button></td>`;
+        body.append(tr);
+      }
+    }
+
+    async function loadZombies() {
+      const status = document.getElementById('zombies-status');
+      status.textContent = 'Loading stored workflow runs...';
+      try {
+        const params = new URLSearchParams({ minutes: String(zombiesState.minutes) });
+        const data = await fetchJSON(`/api/runs/zombies?${params}`);
+        zombiesState.loaded = true;
+        renderZombies(data.runs || []);
+        status.textContent = `Database snapshot loaded at ${new Date().toLocaleTimeString()}. No GitHub polling was triggered.`;
+      } catch (err) {
+        status.textContent = `Failed to load zombie runs: ${err.message}`;
+      }
+    }
+
+
     async function cancelRun(repo, runID, force) {
       const action = force ? 'force cancel' : 'cancel';
       if (!window.confirm(`Are you sure you want to ${action} ${repo} run ${runID}?`)) return;
@@ -629,6 +715,15 @@
     document.getElementById('historic-runs-load-btn').addEventListener('click', () => {
       historicRunsState.loaded = false;
       loadHistoricRuns();
+    });
+    document.getElementById('zombies-load-btn').addEventListener('click', () => {
+      zombiesState.loaded = false;
+      loadZombies();
+    });
+    document.getElementById('zombies-minutes-select').addEventListener('change', (e) => {
+      zombiesState.minutes = Number(e.target.value);
+      zombiesState.loaded = false;
+      loadZombies();
     });
     document.getElementById('historic-prev-btn').addEventListener('click', () => {
       if (historicRunsState.page <= 1) return;
