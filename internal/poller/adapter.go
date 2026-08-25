@@ -3,6 +3,9 @@ package poller
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v66/github"
@@ -13,6 +16,27 @@ import (
 // workflow runs" into the underlying ListRepositoryWorkflowRuns calls.
 type GHClientAdapter struct {
 	Client *github.Client
+}
+
+// CancelWorkflowRun requests a normal or force cancellation for a workflow
+// run. Force cancellation bypasses workflow conditions that keep jobs alive.
+func (a *GHClientAdapter) CancelWorkflowRun(ctx context.Context, repo string, runID int64, force bool) error {
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid repository %q", repo)
+	}
+	action := "cancel"
+	if force {
+		action = "force-cancel"
+	}
+	path := fmt.Sprintf("repos/%s/%s/actions/runs/%d/%s",
+		url.PathEscape(parts[0]), url.PathEscape(parts[1]), runID, action)
+	req, err := a.Client.NewRequest(http.MethodPost, path, nil)
+	if err != nil {
+		return err
+	}
+	_, err = a.Client.Do(ctx, req, nil)
+	return err
 }
 
 // ListRepos returns the names (not full_name) of every repo in the org,

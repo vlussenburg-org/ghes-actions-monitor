@@ -168,7 +168,7 @@
       <section class="page" id="page-active" data-title="Active Jobs">
         <h2>Active workflow runs</h2>
         <table id="active-runs-table">
-          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th></tr></thead>
+          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>
@@ -176,7 +176,7 @@
       <section class="page" id="page-queued" data-title="Queued Jobs">
         <h2>Queued workflow runs</h2>
         <table id="queued-runs-table">
-          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th></tr></thead>
+          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
           <tbody></tbody>
         </table>
       </section>
@@ -216,8 +216,8 @@
       history: 'History',
     };
 
-    async function fetchJSON(path) {
-      const res = await fetch(path);
+    async function fetchJSON(path, options) {
+      const res = await fetch(path, options);
       if (!res.ok) throw new Error(`${path} returned ${res.status}`);
       return res.json();
     }
@@ -318,7 +318,7 @@
       body.innerHTML = '';
       if (!runs || runs.length === 0) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td colspan="5">${emptyText}</td>`;
+        tr.innerHTML = `<td colspan="6">${emptyText}</td>`;
         body.append(tr);
         return;
       }
@@ -329,7 +329,9 @@
           `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${r.Name}</a></td>` +
           `<td>${r.HeadBranch}</td>` +
           `<td class="status-${r.Status}">${r.Status}</td>` +
-          `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
+          `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>` +
+          `<td><button class="cancel-btn" data-repo="${r.Repo}" data-run-id="${r.RunID}">Cancel</button>` +
+          ` <button class="force-cancel-btn" data-repo="${r.Repo}" data-run-id="${r.RunID}">Force cancel</button></td>`;
         body.append(tr);
       }
     }
@@ -355,8 +357,8 @@
           `Org: ${status.org || '(unset)'} - updated ${generatedAt.toLocaleString()}`;
         document.getElementById('sidebar-updated').textContent =
           `${Math.max(0, Math.round((Date.now() - generatedAt.getTime()) / 60000))}m ago`;
-        const activeCount = status.queue_depth?.in_progress ?? 0;
-        const queuedCount = status.queue_depth?.queued ?? 0;
+        const activeCount = status.queue_depth?.InProgress ?? 0;
+        const queuedCount = status.queue_depth?.Queued ?? 0;
         document.getElementById('nav-active').textContent = activeCount;
         document.getElementById('nav-queued').textContent = queuedCount;
         document.getElementById('nav-total').textContent = activeCount + queuedCount;
@@ -365,8 +367,8 @@
         cards.innerHTML = '';
         cards.append(
           card('Jobs in flight', status.in_flight ?? 0),
-          card('Queued', status.queue_depth?.queued ?? 0),
-          card('In progress', status.queue_depth?.in_progress ?? 0),
+          card('Queued', queuedCount),
+          card('In progress', activeCount),
           card('Success (1h)', status.recent_outcomes_1h?.success ?? 0),
           card('Failure (1h)', status.recent_outcomes_1h?.failure ?? 0),
         );
@@ -383,6 +385,30 @@
             `<td class="status-operational">operational</td>`;
           scanBody.append(tr);
         }
+
+        async function cancelRun(repo, runID, force) {
+          const action = force ? 'force cancel' : 'cancel';
+          if (!window.confirm(`Are you sure you want to ${action} ${repo} run ${runID}?`)) return;
+          await fetchJSON(`/api/runs/${runID}/cancel`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo, force }),
+          });
+          await refresh();
+        }
+
+        document.addEventListener('click', (event) => {
+          const button = event.target.closest('.cancel-btn, .force-cancel-btn');
+          if (!button) return;
+          const force = button.classList.contains('force-cancel-btn');
+          button.disabled = true;
+          cancelRun(button.dataset.repo, button.dataset.runId, force).catch((err) => {
+            const el = document.getElementById('error');
+            el.textContent = `Failed to ${force ? 'force cancel' : 'cancel'} workflow run: ${err.message}`;
+            el.style.display = 'block';
+            button.disabled = false;
+          });
+        });
 
         const runnersBody = document.querySelector('#runners-table tbody');
         runnersBody.innerHTML = '';

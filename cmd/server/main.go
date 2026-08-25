@@ -83,7 +83,16 @@ func run(logger *slog.Logger) error {
 	if !cfg.IsGHEC {
 		githubBaseURL = cfg.GHESBaseURL
 	}
-	apiServer := &api.Server{Store: st, Org: cfg.Org, GitHubBaseURL: githubBaseURL}
+	actionClient := clients.Admin
+	if actionClient == nil {
+		actionClient = pollClient
+	}
+	apiServer := &api.Server{
+		Store:         st,
+		Org:           cfg.Org,
+		GitHubBaseURL: githubBaseURL,
+		RunController: &poller.GHClientAdapter{Client: actionClient},
+	}
 	if p != nil {
 		apiServer.Refresher = p
 	}

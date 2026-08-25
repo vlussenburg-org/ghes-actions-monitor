@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vlussenburg/ghes-actions-monitor/internal/store"
@@ -30,12 +31,19 @@ type Refresher interface {
 	RefreshNow(ctx context.Context)
 }
 
+// RunController performs mutating workflow-run actions using the configured
+// administrative GitHub credential.
+type RunController interface {
+	CancelWorkflowRun(ctx context.Context, repo string, runID int64, force bool) error
+}
+
 // Server wires up the monitor's HTTP handlers.
 type Server struct {
 	Store         Store
 	Org           string
 	GitHubBaseURL string
 	Refresher     Refresher
+	RunController RunController
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -60,6 +68,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/runners", s.handleRunners)
 	mux.HandleFunc("GET /api/queue-depth/history", s.handleQueueDepthHistory)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
+	mux.HandleFunc("POST /api/runs/{run_id}/cancel", s.handleCancelRun)
 	return mux
 }
 
@@ -173,6 +182,37 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Refresher.RefreshNow(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"refreshed": true, "at": s.now()})
+}
+
+func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	if s.RunController == nil {
+		writeError(w, http.StatusServiceUnavailable, "cancel is not available")
+		return
+	}
+	runID, err := strconv.ParseInt(r.PathValue("run_id"), 10, 64)
+	if err != nil || runID <= 0 {
+		writeError(w, http.StatusBadRequest, "run_id must be a positive integer")
+		return
+	}
+	var request struct {
+		Repo  string `json:"repo"`
+		Force bool   `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	parts := strings.Split(request.Repo, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" ||
+		strings.ContainsAny(request.Repo, " \t\r\n") {
+		writeError(w, http.StatusBadRequest, "repo must be in owner/name format")
+		return
+	}
+	if err := s.RunController.CancelWorkflowRun(r.Context(), request.Repo, runID, request.Force); err != nil {
+		writeError(w, http.StatusBadGateway, "failed to cancel workflow run")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"cancelled": true, "force": request.Force})
 }
 
 // handleQueueDepthHistory returns the queued-vs-in-progress time series for
