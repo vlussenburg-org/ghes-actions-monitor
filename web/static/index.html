@@ -198,6 +198,9 @@
         <span id="sidebar-updated">Loading...</span>
         <button id="refresh-btn" title="Force refresh">Refresh</button>
       </div>
+      <div class="sidebar-footer" id="sidebar-rate-limit" style="display: none;">
+        <span id="rate-limit-text"></span>
+      </div>
     </aside>
 
     <main class="main">
@@ -731,6 +734,16 @@ ${rows.join('\n')}
         document.getElementById('sidebar-updated').textContent = lastPolledAt
           ? `${Math.max(0, Math.round((Date.now() - lastPolledAt.getTime()) / 60000))}m ago`
           : '—';
+        const rlBox = document.getElementById('sidebar-rate-limit');
+        const rlText = document.getElementById('rate-limit-text');
+        if (rateLimit && rateLimit.limit > 0) {
+          const pct = rateLimit.remaining / rateLimit.limit;
+          rlText.textContent = `API limit: ${rateLimit.remaining}/${rateLimit.limit}`;
+          rlText.style.color = pct <= 0.1 ? 'var(--danger)' : pct <= 0.3 ? '#d29922' : '';
+          rlBox.style.display = 'flex';
+        } else {
+          rlBox.style.display = 'none';
+        }
         const activeCount = status.queue_depth?.InProgress ?? 0;
         const queuedCount = status.queue_depth?.Queued ?? 0;
         document.getElementById('nav-active').textContent = activeCount;
