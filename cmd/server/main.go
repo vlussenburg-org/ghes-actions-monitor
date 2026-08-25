@@ -84,7 +84,7 @@ func run(logger *slog.Logger) error {
 		apiServer.Refresher = p
 	}
 	mux := apiServer.Routes()
-	mux.Handle("/", http.FileServer(http.Dir("web/static")))
+	mux.Handle("/", noCache(http.FileServer(http.Dir("web/static"))))
 
 	webhookHandler := &webhook.Handler{Secret: cfg.WebhookSecret, Store: st, Logger: logger}
 	mux.Handle("/webhook/github", webhookHandler)
@@ -113,4 +113,13 @@ func run(logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+func noCache(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
+	})
 }
