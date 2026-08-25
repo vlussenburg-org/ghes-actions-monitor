@@ -302,9 +302,21 @@
     }
 
     function showPage(page) {
+      if (!pageNames[page]) page = 'dashboard';
       document.querySelectorAll('.page').forEach((el) => el.classList.remove('active'));
       document.getElementById(`page-${page}`)?.classList.add('active');
       document.getElementById('page-title').textContent = pageNames[page] || 'Dashboard';
+      document.querySelectorAll('.nav-item').forEach((item) => {
+        item.classList.toggle('selected', item.dataset.page === page);
+      });
+    }
+
+    function navigateToPage(page) {
+      if (!pageNames[page]) page = 'dashboard';
+      if (window.location.hash !== `#${page}`) {
+        window.history.pushState({}, '', `#${page}`);
+      }
+      showPage(page);
     }
 
     function setHistoryRange(hours, range) {
@@ -459,10 +471,15 @@
     });
     document.querySelectorAll('.nav-item').forEach((btn) => {
       btn.addEventListener('click', () => {
-        updateNavSelection(btn);
-        showPage(btn.dataset.page);
+        navigateToPage(btn.dataset.page);
       });
     });
+    function loadPageFromURL() {
+      showPage(window.location.hash.slice(1) || 'history');
+    }
+    window.addEventListener('popstate', loadPageFromURL);
+    window.addEventListener('hashchange', loadPageFromURL);
+    loadPageFromURL();
   </script>
 </body>
 </html>
