@@ -19,12 +19,15 @@ type fakeGitHubClient struct {
 	reposErr         error
 	activeRuns       map[string][]*github.WorkflowRun // keyed by repo
 	activeRunsErr    map[string]error
+	recentRuns       map[string][]*github.WorkflowRun // keyed by repo
+	recentRunsErr    map[string]error
 	runnerGroups     []*github.RunnerGroup
 	runnerGroupsErr  error
 	groupRunners     map[int64][]*github.Runner
 	groupRunnersErr  map[int64]error
 	listReposCalls   int
 	listRunsCalls    int
+	listRecentCalls  int
 	listGroupsCalls  int
 	listRunnersCalls int
 }
@@ -47,6 +50,16 @@ func (f *fakeGitHubClient) ListActiveWorkflowRuns(ctx context.Context, owner, re
 		return nil, err
 	}
 	return f.activeRuns[repo], nil
+}
+
+func (f *fakeGitHubClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo string) ([]*github.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listRecentCalls++
+	if err, ok := f.recentRunsErr[repo]; ok {
+		return nil, err
+	}
+	return f.recentRuns[repo], nil
 }
 
 func (f *fakeGitHubClient) ListRunnerGroups(ctx context.Context, org string) ([]*github.RunnerGroup, error) {
@@ -264,6 +277,7 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 		Org:              "acme",
 		WorkflowInterval: time.Millisecond,
 		RunnerInterval:   time.Millisecond,
+		HistoryInterval:  time.Millisecond,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -288,6 +302,75 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 	if calls == 0 {
 		t.Error("expected at least one immediate poll on startup")
 	}
+}
+
+func TestPollHistory_HappyPath(t *testing.T) {
+	client := &fakeGitHubClient{
+		repos: []string{"widgets", "gadgets"},
+		recentRuns: map[string][]*github.WorkflowRun{
+			"widgets": {
+				{ID: github.Int64(101), Name: strPtr("CI"), Status: strPtr("completed"), Conclusion: strPtr("success")},
+			},
+			"gadgets": {
+				{ID: github.Int64(102), Name: strPtr("CI"), Status: strPtr("completed"), Conclusion: strPtr("failure")},
+			},
+		},
+	}
+	st := &fakeStore{}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollHistory(context.Background())
+
+	if len(st.runs) != 2 {
+		t.Fatalf("expected 2 historic runs stored, got %d", len(st.runs))
+	}
+}
+
+func TestPollHistory_ReposError(t *testing.T) {
+	client := &fakeGitHubClient{reposErr: errors.New("boom")}
+	st := &fakeStore{}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollHistory(context.Background()) // should not panic
+
+	if len(st.runs) != 0 {
+		t.Errorf("expected no runs stored when repo listing fails")
+	}
+}
+
+func TestPollHistory_PerRepoErrorContinues(t *testing.T) {
+	client := &fakeGitHubClient{
+		repos: []string{"bad-repo", "good-repo"},
+		recentRunsErr: map[string]error{
+			"bad-repo": errors.New("rate limited"),
+		},
+		recentRuns: map[string][]*github.WorkflowRun{
+			"good-repo": {
+				{ID: github.Int64(9), Status: strPtr("completed")},
+			},
+		},
+	}
+	st := &fakeStore{}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollHistory(context.Background())
+
+	if len(st.runs) != 1 || st.runs[0].RunID != 9 {
+		t.Fatalf("expected good-repo's run to still be stored, got %+v", st.runs)
+	}
+}
+
+func TestPollHistory_StoreErrorContinues(t *testing.T) {
+	client := &fakeGitHubClient{
+		repos: []string{"widgets"},
+		recentRuns: map[string][]*github.WorkflowRun{
+			"widgets": {{ID: github.Int64(1), Status: strPtr("completed")}},
+		},
+	}
+	st := &fakeStore{runErr: errors.New("db error")}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollHistory(context.Background()) // should not panic
 }
 
 func TestToStoreRun_UsesRunUpdatedAtWhenPresent(t *testing.T) {

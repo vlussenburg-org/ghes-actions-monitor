@@ -107,6 +107,46 @@ func TestGHClientAdapter_ListActiveWorkflowRuns_Error(t *testing.T) {
 	}
 }
 
+func TestGHClientAdapter_ListRecentWorkflowRuns(t *testing.T) {
+	var gotCreated string
+	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/actions/runs") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		gotCreated = r.URL.Query().Get("created")
+		w.Header().Set("Content-Type", "application/json")
+		runs := []map[string]any{
+			{"id": 1, "status": "completed", "conclusion": "success"},
+			{"id": 2, "status": "queued"},
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(runs), "workflow_runs": runs})
+	})
+	defer srv.Close()
+
+	runs, err := adapter.ListRecentWorkflowRuns(t.Context(), "acme", "widgets")
+	if err != nil {
+		t.Fatalf("ListRecentWorkflowRuns: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs, got %d", len(runs))
+	}
+	if !strings.HasPrefix(gotCreated, ">=") {
+		t.Fatalf("expected created query param to use >= prefix, got %q", gotCreated)
+	}
+}
+
+func TestGHClientAdapter_ListRecentWorkflowRuns_Error(t *testing.T) {
+	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	defer srv.Close()
+
+	if _, err := adapter.ListRecentWorkflowRuns(t.Context(), "acme", "widgets"); err == nil {
+		t.Fatal("expected error from ListRecentWorkflowRuns on server 500")
+	}
+}
+
 func TestGHClientAdapter_ListRunnerGroups(t *testing.T) {
 	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.URL.Path, "/actions/runner-groups") {

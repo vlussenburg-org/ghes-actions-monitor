@@ -1,8 +1,9 @@
 // Package poller periodically calls the GitHub REST API to fill in what the
 // webhook event feed doesn't carry: a full sweep of active (queued/
 // in_progress) workflow runs across every repo in the org (as a backstop
-// for missed or delayed webhook deliveries), and runner group capacity for
-// the org.
+// for missed or delayed webhook deliveries), a slower sweep of each repo's
+// recent (last 7 days) run history regardless of status (so completed runs
+// show up even without a webhook), and runner group capacity for the org.
 package poller
 
 import (
@@ -28,6 +29,7 @@ type Store interface {
 type GitHubClient interface {
 	ListRepos(ctx context.Context, org string) ([]string, error)
 	ListActiveWorkflowRuns(ctx context.Context, owner, repo string) ([]*github.WorkflowRun, error)
+	ListRecentWorkflowRuns(ctx context.Context, owner, repo string) ([]*github.WorkflowRun, error)
 	ListRunnerGroups(ctx context.Context, org string) ([]*github.RunnerGroup, error)
 	ListRunnerGroupRunners(ctx context.Context, org string, groupID int64) ([]*github.Runner, error)
 }
@@ -41,6 +43,7 @@ type Poller struct {
 
 	WorkflowInterval time.Duration
 	RunnerInterval   time.Duration
+	HistoryInterval  time.Duration
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -53,11 +56,14 @@ func (p *Poller) Run(ctx context.Context) {
 	defer workflowTicker.Stop()
 	runnerTicker := time.NewTicker(p.intervalOrDefault(p.RunnerInterval, 60*time.Second))
 	defer runnerTicker.Stop()
+	historyTicker := time.NewTicker(p.intervalOrDefault(p.HistoryInterval, 5*time.Minute))
+	defer historyTicker.Stop()
 
 	// Run once immediately so the dashboard has data without waiting a full
 	// interval after startup.
 	p.pollWorkflowRuns(ctx)
 	p.pollRunners(ctx)
+	p.pollHistory(ctx)
 
 	for {
 		select {
@@ -67,6 +73,8 @@ func (p *Poller) Run(ctx context.Context) {
 			p.pollWorkflowRuns(ctx)
 		case <-runnerTicker.C:
 			p.pollRunners(ctx)
+		case <-historyTicker.C:
+			p.pollHistory(ctx)
 		}
 	}
 }
@@ -151,6 +159,32 @@ func (p *Poller) pollRunners(ctx context.Context) {
 		}
 		if err := p.Store.RecordRunnerSnapshot(ctx, snap); err != nil {
 			p.logger().Error("poll: failed to record runner snapshot", "group", g.GetName(), "error", err)
+		}
+	}
+}
+
+// pollHistory sweeps every repo in the org for its recent (last 7 days)
+// workflow runs regardless of status, so completed/historic runs show up
+// in the dashboard even without a webhook delivering them live. Runs on a
+// slower interval than pollWorkflowRuns since it's a heavier, less
+// time-sensitive sweep.
+func (p *Poller) pollHistory(ctx context.Context) {
+	repos, err := p.Client.ListRepos(ctx, p.Org)
+	if err != nil {
+		p.logger().Error("poll: failed to list repos for history sweep", "error", err)
+		return
+	}
+
+	for _, repo := range repos {
+		runs, err := p.Client.ListRecentWorkflowRuns(ctx, p.Org, repo)
+		if err != nil {
+			p.logger().Error("poll: failed to list recent workflow runs", "repo", repo, "error", err)
+			continue
+		}
+		for _, r := range runs {
+			if err := p.Store.UpsertWorkflowRun(ctx, toStoreRun(p.Org, repo, r, p.now())); err != nil {
+				p.logger().Error("poll: failed to store historic workflow run", "repo", repo, "run_id", r.GetID(), "error", err)
+			}
 		}
 	}
 }

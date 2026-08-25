@@ -47,8 +47,9 @@ All configuration is via environment variables (see `internal/config`):
 | `GITHUB_WEBHOOK_SECRET` | no | — | HMAC secret for verifying inbound webhook deliveries. Strongly recommended in production. |
 | `DB_PATH` | no | `data/monitor.db` | SQLite database file path. |
 | `PORT` | no | `8080` | HTTP listen port. |
-| `WORKFLOW_POLL_INTERVAL` | no | `30s` | Any Go duration string. |
+| `WORKFLOW_POLL_INTERVAL` | no | `30s` | Any Go duration string. Active (queued/in_progress) run sweep. |
 | `RUNNER_POLL_INTERVAL` | no | `60s` | Any Go duration string. |
+| `HISTORY_POLL_INTERVAL` | no | `5m` | Any Go duration string. Backfills completed/historic runs from the last 7 days per repo (unpaginated, first 100 per repo) so history is visible even without a webhook configured. |
 
 ## Running locally
 

@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/go-github/v66/github"
 )
@@ -53,6 +54,24 @@ func (a *GHClientAdapter) ListActiveWorkflowRuns(ctx context.Context, owner, rep
 		all = append(all, runs.WorkflowRuns...)
 	}
 	return all, nil
+}
+
+// ListRecentWorkflowRuns returns one page of the most recent workflow runs
+// for the given repo from the last 7 days, regardless of status, so
+// completed/historic runs are captured too (not just active ones).
+// Deliberately unpaginated for now — a single 100-result page per repo is
+// enough for the MVP's "recent history" view.
+func (a *GHClientAdapter) ListRecentWorkflowRuns(ctx context.Context, owner, repo string) ([]*github.WorkflowRun, error) {
+	since := time.Now().AddDate(0, 0, -7).Format("2006-01-02")
+	opts := &github.ListWorkflowRunsOptions{
+		Created:     ">=" + since,
+		ListOptions: github.ListOptions{PerPage: 100},
+	}
+	runs, _, err := a.Client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list recent workflow runs for %s/%s: %w", owner, repo, err)
+	}
+	return runs.WorkflowRuns, nil
 }
 
 // ListRunnerGroups returns every runner group configured for the org.
