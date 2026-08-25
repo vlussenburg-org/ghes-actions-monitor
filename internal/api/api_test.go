@@ -431,3 +431,78 @@ func TestHandleQueueDepthHistory_StoreError(t *testing.T) {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
 }
+
+func TestHandleZombieRuns_HappyPath(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	want := []store.WorkflowRun{
+		{RunID: 1, Repo: "org/a", Status: "queued", UpdatedAt: now.Add(-2 * time.Hour)},
+	}
+	fs := &fakeStore{zombieRuns: want}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/zombies?minutes=90", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	runs, _ := body["runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 zombie run, got %d", len(runs))
+	}
+	if body["stale_after_minutes"] != float64(90) {
+		t.Errorf("expected stale_after_minutes=90, got %v", body["stale_after_minutes"])
+	}
+}
+
+func TestHandleZombieRuns_DefaultsTo60Minutes(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	fs := &fakeStore{}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/zombies", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["stale_after_minutes"] != float64(60) {
+		t.Errorf("expected default stale_after_minutes=60, got %v", body["stale_after_minutes"])
+	}
+}
+
+func TestHandleZombieRuns_CapsAt10080Minutes(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	fs := &fakeStore{}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/zombies?minutes=99999999", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["stale_after_minutes"] != float64(10080) {
+		t.Errorf("expected capped stale_after_minutes=10080, got %v", body["stale_after_minutes"])
+	}
+}
+
+func TestHandleZombieRuns_StoreError(t *testing.T) {
+	fs := &fakeStore{zombieRunsErr: errors.New("db down")}
+	s := &Server{Store: fs}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/zombies", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+}

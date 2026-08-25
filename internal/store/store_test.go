@@ -493,3 +493,99 @@ func TestQueueDepthHistory_EmptyWhenNoSnapshots(t *testing.T) {
 		t.Errorf("expected no snapshots, got %+v", history)
 	}
 }
+
+func TestZombieRuns_ReturnsStaleQueuedAndInProgress(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Stale queued run: last updated 2 hours ago.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "queued",
+		UpdatedAt: now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Stale in_progress run: last updated 3 hours ago.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 2, Repo: "org/b", Name: "CI", Status: "in_progress",
+		UpdatedAt: now.Add(-3 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Fresh queued run: updated a minute ago, should NOT be a zombie.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 3, Repo: "org/c", Name: "CI", Status: "queued",
+		UpdatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Stale but completed run: should NOT be a zombie regardless of age.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 4, Repo: "org/d", Name: "CI", Status: "completed", Conclusion: "success",
+		UpdatedAt: now.Add(-24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	runs, err := s.ZombieRuns(ctx, 60*time.Minute, now)
+	if err != nil {
+		t.Fatalf("ZombieRuns: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 zombie runs, got %d: %+v", len(runs), runs)
+	}
+	// Oldest (most stale) first.
+	if runs[0].RunID != 2 || runs[1].RunID != 1 {
+		t.Errorf("expected zombie runs ordered oldest-first (run 2, then run 1), got %+v", runs)
+	}
+}
+
+func TestZombieRuns_EmptyWhenNoneStale(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "queued",
+		UpdatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	runs, err := s.ZombieRuns(ctx, 60*time.Minute, now)
+	if err != nil {
+		t.Fatalf("ZombieRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected no zombie runs, got %+v", runs)
+	}
+}
+
+func TestZombieRuns_UsesLatestStatePerRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Run started queued 2 hours ago (stale), but has since completed.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "queued",
+		UpdatedAt: now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "completed", Conclusion: "success",
+		UpdatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	runs, err := s.ZombieRuns(ctx, 60*time.Minute, now)
+	if err != nil {
+		t.Fatalf("ZombieRuns: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected no zombie runs (run completed since), got %+v", runs)
+	}
+}
