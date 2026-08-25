@@ -1,0 +1,8 @@
+.git
+.github
+*.md
+data/
+*.db
+bin/
+tmp/
+.DS_Store

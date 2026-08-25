@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>GitHub Actions Monitor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; max-width: 960px; }
+    h1 { margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-top: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; }
+    .card .value { font-size: 2rem; font-weight: 600; }
+    .card .label { color: #666; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+    th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+    .status-success { color: #1a7f37; }
+    .status-failure { color: #cf222e; }
+    .status-in_progress, .status-queued { color: #9a6700; }
+    section { margin-bottom: 2rem; }
+    #error { color: #cf222e; display: none; }
+  </style>
+</head>
+<body>
+  <h1>GitHub Actions Monitor</h1>
+  <p class="subtitle" id="org-line">Loading…</p>
+  <p id="error"></p>
+
+  <section class="grid" id="summary-cards"></section>
+
+  <section>
+    <h2>Runner groups</h2>
+    <table id="runners-table">
+      <thead><tr><th>Group</th><th>Total</th><th>Busy</th><th>Idle</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recent workflow runs</h2>
+    <table id="runs-table">
+      <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Conclusion</th><th>Updated</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script>
+    async function fetchJSON(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`${path} returned ${res.status}`);
+      return res.json();
+    }
+
+    function card(label, value) {
+      const div = document.createElement('div');
+      div.className = 'card';
+      div.innerHTML = `<div class="value">${value}</div><div class="label">${label}</div>`;
+      return div;
+    }
+
+    async function refresh() {
+      try {
+        const [status, runners, runs] = await Promise.all([
+          fetchJSON('/api/status'),
+          fetchJSON('/api/runners'),
+          fetchJSON('/api/runs/recent?limit=25'),
+        ]);
+
+        document.getElementById('error').style.display = 'none';
+        document.getElementById('org-line').textContent =
+          `Org: ${status.org || '(unset)'} · updated ${new Date(status.generated_at).toLocaleTimeString()}`;
+
+        const cards = document.getElementById('summary-cards');
+        cards.innerHTML = '';
+        cards.append(
+          card('Jobs in flight', status.in_flight ?? 0),
+          card('Queued', status.queue_depth?.queued ?? 0),
+          card('In progress', status.queue_depth?.in_progress ?? 0),
+          card('Success (1h)', status.recent_outcomes_1h?.success ?? 0),
+          card('Failure (1h)', status.recent_outcomes_1h?.failure ?? 0),
+        );
+
+        const runnersBody = document.querySelector('#runners-table tbody');
+        runnersBody.innerHTML = '';
+        for (const g of runners.runner_groups || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${g.GroupName}</td><td>${g.Total}</td><td>${g.Busy}</td><td>${g.Idle}</td>`;
+          runnersBody.append(tr);
+        }
+
+        const runsBody = document.querySelector('#runs-table tbody');
+        runsBody.innerHTML = '';
+        for (const r of runs.runs || []) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${r.Repo}</td><td>${r.Name}</td><td>${r.HeadBranch}</td>` +
+            `<td class="status-${r.Status}">${r.Status}</td>` +
+            `<td class="status-${r.Conclusion}">${r.Conclusion || ''}</td>` +
+            `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
+          runsBody.append(tr);
+        }
+      } catch (err) {
+        const el = document.getElementById('error');
+        el.textContent = `Failed to load dashboard data: ${err.message}`;
+        el.style.display = 'block';
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>
