@@ -2,6 +2,7 @@ package poller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -36,6 +37,10 @@ func (a *GHClientAdapter) CancelWorkflowRun(ctx context.Context, repo string, ru
 		return err
 	}
 	_, err = a.Client.Do(ctx, req, nil)
+	var accepted *github.AcceptedError
+	if errors.As(err, &accepted) {
+		return nil
+	}
 	return err
 }
 

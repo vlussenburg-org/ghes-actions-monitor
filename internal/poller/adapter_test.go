@@ -30,6 +30,7 @@ func TestGHClientAdapter_ListRepos_Paginates(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
+
 		page := r.URL.Query().Get("page")
 		w.Header().Set("Content-Type", "application/json")
 		switch page {
@@ -39,6 +40,7 @@ func TestGHClientAdapter_ListRepos_Paginates(t *testing.T) {
 		default:
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"name": "gadgets"}})
 		}
+
 	})
 	defer srv.Close()
 
@@ -67,6 +69,7 @@ func TestGHClientAdapter_ListRepos_Error(t *testing.T) {
 	if _, err := adapter.ListRepos(t.Context(), "acme"); err == nil {
 		t.Fatal("expected error from ListRepos on server 500")
 	}
+
 }
 
 func TestGHClientAdapter_ListActiveWorkflowRuns(t *testing.T) {
@@ -212,5 +215,27 @@ func TestGHClientAdapter_ListRunnerGroupRunners_Error(t *testing.T) {
 
 	if _, err := adapter.ListRunnerGroupRunners(t.Context(), "acme", 1); err == nil {
 		t.Fatal("expected error from ListRunnerGroupRunners on server 500")
+	}
+}
+
+func TestGHClientAdapter_CancelWorkflowRun(t *testing.T) {
+	var paths []string
+	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	defer srv.Close()
+
+	if err := adapter.CancelWorkflowRun(t.Context(), "acme/widgets", 42, false); err != nil {
+		t.Fatalf("normal cancel: %v", err)
+	}
+	if err := adapter.CancelWorkflowRun(t.Context(), "acme/widgets", 43, true); err != nil {
+		t.Fatalf("force cancel: %v", err)
+	}
+	if got, want := strings.Join(paths, ","), "/repos/acme/widgets/actions/runs/42/cancel,/repos/acme/widgets/actions/runs/43/force-cancel"; got != want {
+		t.Errorf("paths = %q, want %q", got, want)
 	}
 }

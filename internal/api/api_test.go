@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,18 @@ type fakeStore struct {
 	lastOpts         store.RecentRunsOptions
 	lastSince        time.Time
 	lastHistorySince time.Time
+}
+
+type fakeRunController struct {
+	repo  string
+	runID int64
+	force bool
+	err   error
+}
+
+func (f *fakeRunController) CancelWorkflowRun(ctx context.Context, repo string, runID int64, force bool) error {
+	f.repo, f.runID, f.force = repo, runID, force
+	return f.err
 }
 
 func (f *fakeStore) QueueDepth(ctx context.Context) (store.QueueDepth, error) {
@@ -69,8 +82,24 @@ func TestHandleHealthz(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+
 	if rec.Body.String() != "ok" {
 		t.Errorf("unexpected body: %q", rec.Body.String())
+	}
+}
+
+func TestHandleCancelRun(t *testing.T) {
+	controller := &fakeRunController{}
+	s := &Server{Store: &fakeStore{}, RunController: controller}
+	req := httptest.NewRequest(http.MethodPost, "/api/runs/42/cancel", strings.NewReader(`{"repo":"acme/widgets","force":true}`))
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if controller.repo != "acme/widgets" || controller.runID != 42 || !controller.force {
+		t.Fatalf("unexpected cancellation request: %+v", controller)
 	}
 }
 
