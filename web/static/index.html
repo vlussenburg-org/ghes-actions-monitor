@@ -345,8 +345,6 @@
         ]);
 
         const history = queueHistory.history || [];
-        drawQueueChart(history);
-        updateRangeButtons();
 
         document.getElementById('error').style.display = 'none';
         const generatedAt = status.generated_at ? new Date(status.generated_at) : new Date();
