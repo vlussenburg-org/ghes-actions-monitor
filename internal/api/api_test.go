@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vlussenburg/ghes-actions-monitor/internal/store"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/store"
 )
 
 type fakeStore struct {

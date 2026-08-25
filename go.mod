@@ -1,4 +1,4 @@
-module github.com/vlussenburg/ghes-actions-monitor
+module github.com/vlussenburg-org/ghes-actions-monitor
 
 go 1.25.0
 

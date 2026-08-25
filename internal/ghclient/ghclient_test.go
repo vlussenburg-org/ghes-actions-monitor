@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vlussenburg/ghes-actions-monitor/internal/config"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/config"
 )
 
 func TestNew_NoCredentials(t *testing.T) {

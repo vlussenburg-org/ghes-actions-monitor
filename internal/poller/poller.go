@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/go-github/v66/github"
 
-	"github.com/vlussenburg/ghes-actions-monitor/internal/store"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/store"
 )
 
 // Store is the subset of store.Store the poller needs.

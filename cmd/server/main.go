@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/vlussenburg/ghes-actions-monitor/internal/api"
-	"github.com/vlussenburg/ghes-actions-monitor/internal/config"
-	"github.com/vlussenburg/ghes-actions-monitor/internal/ghclient"
-	"github.com/vlussenburg/ghes-actions-monitor/internal/poller"
-	"github.com/vlussenburg/ghes-actions-monitor/internal/store"
-	"github.com/vlussenburg/ghes-actions-monitor/internal/webhook"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/api"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/config"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/ghclient"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/poller"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/store"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/webhook"
 )
 
 func main() {

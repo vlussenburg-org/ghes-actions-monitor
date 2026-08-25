@@ -24,7 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v66/github"
 
-	"github.com/vlussenburg/ghes-actions-monitor/internal/config"
+	"github.com/vlussenburg-org/ghes-actions-monitor/internal/config"
 )
 
 // Clients bundles the two authenticated clients the monitor needs.

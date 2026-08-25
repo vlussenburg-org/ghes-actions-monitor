@@ -20,3 +20,13 @@ settings, have the app create/update it on startup:
 - A prior draft implementation (`internal/webhookprovision`) was written
   and then removed to keep the MVP scope minimal; revisit that approach
   when this is picked up.
+
+## Add outbound GitHub API observability
+
+Use standard Go OpenTelemetry HTTP instrumentation (for example,
+`otelhttp.NewTransport`) around the GitHub client transport, exporting spans
+and metrics to the deployment's configured backend. Add GitHub-specific
+attributes and counters for normalized endpoint, HTTP status, latency, rate
+limit headers, poller source (`workflow_sweep`, `runner_sweep`,
+`manual_refresh`), and sweeps skipped because of rate limiting. Keep endpoint
+labels bounded by avoiding raw repository names and run IDs.
