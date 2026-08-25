@@ -740,7 +740,7 @@ ${rows.join('\n')}
         const rlText = document.getElementById('rate-limit-text');
         if (rateLimit && rateLimit.limit > 0) {
           const pct = rateLimit.remaining / rateLimit.limit;
-          rlText.textContent = `API limit: ${rateLimit.remaining}/${rateLimit.limit}`;
+          rlText.textContent = `GitHub API remaining: ${rateLimit.remaining}/${rateLimit.limit}`;
           rlText.style.color = pct <= 0.1 ? 'var(--danger)' : pct <= 0.3 ? '#d29922' : '';
           rlBox.style.display = 'flex';
         } else {
