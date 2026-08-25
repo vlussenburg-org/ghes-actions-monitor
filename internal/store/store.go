@@ -174,11 +174,19 @@ func (s *Store) QueueDepth(ctx context.Context) (QueueDepth, error) {
 }
 
 // RecentOutcomes returns conclusion counts for runs completed within the
-// given window, used to compute success/failure trend rates.
+// given window, used to compute success/failure trend rates. Counts
+// distinct runs (by run_id, using each run's most recently recorded state)
+// rather than raw rows, since polling re-records unchanged runs on every
+// sweep and would otherwise inflate the count with duplicates.
 func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT conclusion, COUNT(*) FROM workflow_runs
-		WHERE status = 'completed' AND updated_at >= ?
+		SELECT conclusion, COUNT(*) FROM (
+			SELECT run_id, conclusion, status, updated_at FROM workflow_runs w1
+			WHERE w1.id = (
+				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+			)
+		) latest
+		WHERE latest.status = 'completed' AND latest.updated_at >= ?
 		GROUP BY conclusion`, since)
 	if err != nil {
 		return nil, fmt.Errorf("query recent outcomes: %w", err)

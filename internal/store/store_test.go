@@ -147,6 +147,33 @@ func TestRecentOutcomes(t *testing.T) {
 	}
 }
 
+func TestRecentOutcomes_DedupesRepeatedPollsOfSameRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	since := now.Add(-time.Hour)
+
+	// Simulate the same run being re-recorded across multiple poll/refresh
+	// sweeps (e.g. force-refresh clicked repeatedly): each sweep inserts a
+	// new row for the same run_id, but it must only be counted once.
+	for i := 0; i < 3; i++ {
+		if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+			RunID: 1, Repo: "org/a", Status: "completed", Conclusion: "failure",
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	out, err := s.RecentOutcomes(ctx, since)
+	if err != nil {
+		t.Fatalf("RecentOutcomes: %v", err)
+	}
+	if out["failure"] != 1 {
+		t.Errorf("expected exactly 1 failure despite 3 repeated polls of the same run, got %d", out["failure"])
+	}
+}
+
 func TestRecentRuns(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
