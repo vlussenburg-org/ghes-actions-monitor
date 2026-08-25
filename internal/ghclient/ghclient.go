@@ -10,11 +10,14 @@
 package ghclient
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +45,8 @@ type RateLimitStatus struct {
 	Remaining int       `json:"remaining"`
 	Limit     int       `json:"limit"`
 	ResetAt   time.Time `json:"reset_at"`
+	Limited   bool      `json:"limited"`
+	RetryAt   time.Time `json:"retry_at"`
 }
 
 type RateLimitTracker struct {
@@ -71,16 +76,55 @@ func (t *RateLimitTracker) RoundTrip(req *http.Request) (*http.Response, error) 
 		if v, e := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); e == nil {
 			t.status.ResetAt = time.Unix(v, 0).UTC()
 		}
-		if resp.StatusCode == http.StatusTooManyRequests {
-			if v, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil {
-				t.backoffUntil = time.Now().Add(time.Duration(v) * time.Second)
-			} else if !t.status.ResetAt.IsZero() {
-				t.backoffUntil = t.status.ResetAt
-			}
+		if retryAt, ok := retryAfter(resp, t.status.ResetAt); ok {
+			t.backoffUntil = retryAt
 		}
 		t.mu.Unlock()
 	}
 	return resp, err
+}
+
+func retryAfter(resp *http.Response, resetAt time.Time) (time.Time, bool) {
+	if resp.StatusCode == http.StatusTooManyRequests || resp.Header.Get("Retry-After") != "" {
+		return retryAfterTime(resp.Header, resetAt), true
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		return time.Time{}, false
+	}
+	remaining, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
+	if err == nil && remaining <= 0 && !resetAt.IsZero() {
+		return resetAt, true
+	}
+	body := responseBody(resp)
+	if strings.Contains(body, "secondary rate limit") ||
+		strings.Contains(body, "abuse detection") ||
+		strings.Contains(body, "rate limit exceeded") {
+		return retryAfterTime(resp.Header, resetAt), true
+	}
+	return time.Time{}, false
+}
+
+func retryAfterTime(header http.Header, resetAt time.Time) time.Time {
+	if v, err := strconv.Atoi(header.Get("Retry-After")); err == nil && v > 0 {
+		return time.Now().Add(time.Duration(v) * time.Second)
+	}
+	if !resetAt.IsZero() && resetAt.After(time.Now()) {
+		return resetAt
+	}
+	return time.Now().Add(time.Minute)
+}
+
+func responseBody(resp *http.Response) string {
+	if resp.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(nil))
+		return ""
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	return strings.ToLower(string(body))
 }
 
 func (t *RateLimitTracker) wait(ctx context.Context) error {
@@ -106,10 +150,16 @@ func (t *RateLimitTracker) wait(ctx context.Context) error {
 func (t *RateLimitTracker) RateLimitStatus() any {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if t.status.Limit == 0 && t.status.ResetAt.IsZero() {
+	limited, retryAt := t.rateLimitedLocked(time.Now())
+	if t.status.Limit == 0 && t.status.ResetAt.IsZero() && !limited {
 		return nil
 	}
-	return t.status
+	status := t.status
+	if limited {
+		status.Limited = true
+		status.RetryAt = retryAt
+	}
+	return status
 }
 
 // RateLimited reports whether the budget is currently spent, along with the
@@ -118,7 +168,10 @@ func (t *RateLimitTracker) RateLimitStatus() any {
 func (t *RateLimitTracker) RateLimited() (bool, time.Time) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	now := time.Now()
+	return t.rateLimitedLocked(time.Now())
+}
+
+func (t *RateLimitTracker) rateLimitedLocked(now time.Time) (bool, time.Time) {
 	if t.backoffUntil.After(now) {
 		return true, t.backoffUntil
 	}

@@ -154,6 +154,37 @@ func TestCloseStaleActiveRuns_NoReposIsNoop(t *testing.T) {
 	}
 }
 
+func TestCloseStaleActiveRun_DoesNotOverwriteConcurrentCompletion(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "in_progress", UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert active: %v", err)
+	}
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "completed", Conclusion: "success", UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("upsert completion: %v", err)
+	}
+
+	if err := s.closeStaleActiveRun(ctx, 1, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("closeStaleActiveRun: %v", err)
+	}
+
+	runs, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "updated_at", Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if total != 1 || len(runs) != 1 {
+		t.Fatalf("expected one latest run, got total=%d runs=%+v", total, runs)
+	}
+	if runs[0].Status != "completed" || runs[0].Conclusion != "success" {
+		t.Fatalf("completion should remain latest state, got %+v", runs[0])
+	}
+}
+
 func TestQueueDepth_Empty(t *testing.T) {
 	s := newTestStore(t)
 	d, err := s.QueueDepth(context.Background())

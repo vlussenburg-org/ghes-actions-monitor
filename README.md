@@ -92,6 +92,11 @@ on a persistent volume/mount so history survives redeploys.
 - `POST /api/runs/{run_id}/cancel` — cancel or force-cancel an active workflow run.
 - `POST /webhook/github` — inbound org webhook receiver (`workflow_run`).
 
+The cancel endpoint is constrained to `GITHUB_ORG`, but this MVP does not yet
+authenticate dashboard/API users itself. Deploy it behind an authenticating
+proxy such as Okta/IAP and restrict direct network access before exposing
+`POST /api/runs/{run_id}/cancel`.
+
 ## Development
 
 ```sh

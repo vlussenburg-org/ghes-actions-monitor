@@ -116,8 +116,12 @@
     .status-failure { color: var(--danger); font-weight: 750; }
     .status-in_progress, .status-queued, .queued-text { color: var(--queued); font-weight: 750; }
     .status-stale { color: var(--muted); font-weight: 750; }
-    th.sortable { cursor: pointer; user-select: none; }
-    th.sortable:hover { color: #334155; }
+    .sort-button {
+      align-items: center; background: transparent; border: 0; color: inherit;
+      cursor: pointer; display: inline-flex; font: inherit; font-weight: inherit;
+      gap: 0.25rem; letter-spacing: inherit; padding: 0; text-transform: inherit;
+    }
+    .sort-button:hover, .sort-button:focus-visible { color: #334155; outline: none; }
     th.sortable .arrow { opacity: 0.7; font-size: 0.75em; }
     .pagination { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; font-size: 0.9rem; color: var(--muted); }
     .two-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2rem; }
@@ -226,14 +230,14 @@
         <table id="historic-runs-table">
           <thead>
             <tr>
-              <th class="sortable" data-sort="repo">Repo <span class="arrow"></span></th>
-              <th class="sortable" data-sort="name">Workflow <span class="arrow"></span></th>
+              <th class="sortable" data-sort="repo" aria-sort="none"><button class="sort-button" type="button" data-sort="repo">Repo <span class="arrow" aria-hidden="true"></span></button></th>
+              <th class="sortable" data-sort="name" aria-sort="none"><button class="sort-button" type="button" data-sort="name">Workflow <span class="arrow" aria-hidden="true"></span></button></th>
               <th>Branch</th>
-              <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
+              <th class="sortable" data-sort="status" aria-sort="none"><button class="sort-button" type="button" data-sort="status">Status <span class="arrow" aria-hidden="true"></span></button></th>
               <th>Conclusion</th>
               <th>Event</th>
               <th>Source</th>
-              <th class="sortable" data-sort="updated_at">Updated <span class="arrow"></span></th>
+              <th class="sortable" data-sort="updated_at" aria-sort="descending"><button class="sort-button" type="button" data-sort="updated_at">Updated <span class="arrow" aria-hidden="true">▼</span></button></th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -449,7 +453,9 @@
       document.getElementById('historic-next-btn').disabled = historicRunsState.page >= totalPages;
       document.querySelectorAll('#historic-runs-table th.sortable').forEach((th) => {
         const arrow = th.querySelector('.arrow');
-        arrow.textContent = th.dataset.sort === historicRunsState.sort ? (historicRunsState.order === 'asc' ? '▲' : '▼') : '';
+        const selected = th.dataset.sort === historicRunsState.sort;
+        arrow.textContent = selected ? (historicRunsState.order === 'asc' ? '▲' : '▼') : '';
+        th.setAttribute('aria-sort', selected ? (historicRunsState.order === 'asc' ? 'ascending' : 'descending') : 'none');
       });
     }
 
@@ -528,8 +534,13 @@
 
         document.getElementById('error').style.display = 'none';
         const rateLimit = status.rate_limit;
-        if (rateLimit && rateLimit.remaining === 0 && rateLimit.limit > 0 && rateLimit.reset_at && !rateLimit.reset_at.startsWith('0001-')) {
-          const reset = rateLimit.reset_at ? new Date(rateLimit.reset_at).toLocaleTimeString() : 'the reset time';
+        if (rateLimit?.limited) {
+          const retry = rateLimit.retry_at ? new Date(rateLimit.retry_at).toLocaleTimeString() : 'the retry time';
+          const el = document.getElementById('error');
+          el.textContent = `GitHub API rate limit active. Polling may be stale until ${retry}.`;
+          el.style.display = 'block';
+        } else if (rateLimit && rateLimit.remaining === 0 && rateLimit.limit > 0 && rateLimit.reset_at && !rateLimit.reset_at.startsWith('0001-')) {
+          const reset = new Date(rateLimit.reset_at).toLocaleTimeString();
           const el = document.getElementById('error');
           el.textContent = `GitHub API rate limit exhausted. Polling may be stale until ${reset}.`;
           el.style.display = 'block';
@@ -630,9 +641,9 @@
       historicRunsState.page++;
       loadHistoricRuns();
     });
-    document.querySelectorAll('#historic-runs-table th.sortable').forEach((th) => {
-      th.addEventListener('click', () => {
-        const sort = th.dataset.sort;
+    document.querySelectorAll('#historic-runs-table .sort-button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const sort = btn.dataset.sort;
         if (historicRunsState.sort === sort) {
           historicRunsState.order = historicRunsState.order === 'asc' ? 'desc' : 'asc';
         } else {

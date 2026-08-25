@@ -99,6 +99,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.RunnerPollInterval != 10*time.Minute {
 		t.Errorf("unexpected default runner poll interval: %v", c.RunnerPollInterval)
 	}
+	if c.WorkflowPollInterval != 5*time.Minute {
+		t.Errorf("unexpected default workflow poll interval: %v", c.WorkflowPollInterval)
+	}
 	if c.HasAppCredentials() {
 		t.Errorf("expected no app credentials configured")
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -47,6 +48,78 @@ func TestRateLimitTracker_RecordsHeaders(t *testing.T) {
 	status := tracker.RateLimitStatus().(RateLimitStatus)
 	if status.Remaining != 12 || status.Limit != 5000 || status.ResetAt.Unix() != reset {
 		t.Fatalf("unexpected rate-limit status: %+v", status)
+	}
+}
+
+func TestRateLimitTracker_SecondaryLimit403BacksOff(t *testing.T) {
+	tracker := &RateLimitTracker{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		header := http.Header{}
+		header.Add("X-RateLimit-Remaining", "42")
+		header.Add("X-RateLimit-Limit", "5000")
+		header.Add("Retry-After", "60")
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(`{"message":"You have exceeded a secondary rate limit"}`)),
+		}, nil
+	})}
+	resp, err := tracker.RoundTrip(httptest.NewRequest(http.MethodGet, "https://example.test", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "secondary rate limit") {
+		t.Fatalf("expected response body to remain readable, got %q", body)
+	}
+
+	limited, retryAt := tracker.RateLimited()
+	if !limited || !retryAt.After(time.Now()) {
+		t.Fatalf("expected secondary limit backoff, got limited=%v retryAt=%v", limited, retryAt)
+	}
+	status := tracker.RateLimitStatus().(RateLimitStatus)
+	if !status.Limited || !status.RetryAt.Equal(retryAt) {
+		t.Fatalf("expected effective limit status, got %+v retryAt=%v", status, retryAt)
+	}
+}
+
+func TestRateLimitTracker_SecondaryLimitWithoutPrimaryHeadersReportsStatus(t *testing.T) {
+	tracker := &RateLimitTracker{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		header := http.Header{}
+		header.Add("Retry-After", "60")
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(`{"message":"You have exceeded a secondary rate limit"}`)),
+		}, nil
+	})}
+	if _, err := tracker.RoundTrip(httptest.NewRequest(http.MethodGet, "https://example.test", nil)); err != nil {
+		t.Fatal(err)
+	}
+	status := tracker.RateLimitStatus().(RateLimitStatus)
+	if !status.Limited || !status.RetryAt.After(time.Now()) {
+		t.Fatalf("expected limited status without primary headers, got %+v", status)
+	}
+}
+
+func TestRateLimitTracker_Ordinary403DoesNotBackOff(t *testing.T) {
+	tracker := &RateLimitTracker{base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		header := http.Header{}
+		header.Add("X-RateLimit-Remaining", "42")
+		header.Add("X-RateLimit-Limit", "5000")
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(`{"message":"Resource not accessible by integration"}`)),
+		}, nil
+	})}
+	if _, err := tracker.RoundTrip(httptest.NewRequest(http.MethodGet, "https://example.test", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if limited, retryAt := tracker.RateLimited(); limited {
+		t.Fatalf("ordinary permission 403 should not back off, got retryAt=%v", retryAt)
 	}
 }
 

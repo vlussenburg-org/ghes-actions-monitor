@@ -219,6 +219,10 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "repo must be in owner/name format")
 		return
 	}
+	if s.Org != "" && parts[0] != s.Org {
+		writeError(w, http.StatusForbidden, "repo owner must match configured organization")
+		return
+	}
 	if err := s.RunController.CancelWorkflowRun(r.Context(), request.Repo, runID, request.Force); err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to cancel workflow run: %v", err))
 		return
