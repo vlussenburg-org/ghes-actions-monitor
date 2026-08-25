@@ -52,7 +52,6 @@ type Config struct {
 	// Poll intervals.
 	RunnerPollInterval   time.Duration
 	WorkflowPollInterval time.Duration
-	HistoryPollInterval  time.Duration
 
 	// DBPath is the local SQLite database file path.
 	DBPath string
@@ -87,10 +86,6 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c.WorkflowPollInterval, err = getEnvDuration("WORKFLOW_POLL_INTERVAL", 5*time.Minute)
-	if err != nil {
-		return Config{}, err
-	}
-	c.HistoryPollInterval, err = getEnvDuration("HISTORY_POLL_INTERVAL", 30*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}

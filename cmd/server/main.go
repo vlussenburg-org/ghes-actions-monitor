@@ -72,7 +72,6 @@ func run(logger *slog.Logger) error {
 			Logger:           logger,
 			WorkflowInterval: cfg.WorkflowPollInterval,
 			RunnerInterval:   cfg.RunnerPollInterval,
-			HistoryInterval:  cfg.HistoryPollInterval,
 		}
 		if clients.RateLimit != nil {
 			p.RateLimiter = clients.RateLimit

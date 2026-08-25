@@ -356,11 +356,6 @@
       });
     }
 
-    function updateNavSelection(selectedButton) {
-      document.querySelectorAll('.nav-item').forEach((item) => item.classList.remove('selected'));
-      selectedButton.classList.add('selected');
-    }
-
     function showPage(page) {
       page = normalizePage(page);
       document.querySelectorAll('.page').forEach((el) => el.classList.remove('active'));

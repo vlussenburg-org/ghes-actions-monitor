@@ -26,7 +26,6 @@ feature set.
 | Org webhook delivery format (`workflow_run`) | ✅ | ✅ | Payload shape and `X-Hub-Signature-256` header identical. |
 | Workflow runs / jobs API polling | ✅ | ✅ | Same shape; used to backfill state the webhook feed missed. |
 | Runner groups / self-hosted runners API | ✅ | ✅ | Same shape. |
-| Hosted runners API (`/orgs/{org}/actions/hosted-runners`) | ⚠️ | ✅ | Most GHES appliances don't offer GitHub-hosted runners. **TODO: feature-detect (404 → fall back to self-hosted runner groups only) rather than assuming hosted runners exist.** |
 
 ## Deferred / out of scope for this MVP
 
@@ -46,9 +45,5 @@ same GHES/GHEC-aware approach:
 - OAuth device flow (for CoCo/dashboard auth beyond the admin PAT) is
   available at `/login/device/code` on both GHES (relative to
   `GHES_BASE_URL`) and GHEC (`github.com`) and should generalize cleanly.
-
-## Legend
-- ✅ Implemented and instance-agnostic (works for both today).
-- ⚠️ Implemented for one target only; needs follow-up work for full parity.
 
 Update this table as packages are built out or scope expands.

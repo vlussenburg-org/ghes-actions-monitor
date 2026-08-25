@@ -391,7 +391,6 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 		Org:              "acme",
 		WorkflowInterval: time.Millisecond,
 		RunnerInterval:   time.Millisecond,
-		HistoryInterval:  time.Millisecond,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -56,7 +56,6 @@ type Poller struct {
 
 	WorkflowInterval time.Duration
 	RunnerInterval   time.Duration
-	HistoryInterval  time.Duration
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -235,9 +234,8 @@ func (p *Poller) pollRunners(ctx context.Context) {
 
 // pollHistory sweeps every repo in the org for its recent (last 7 days)
 // workflow runs regardless of status, so completed/historic runs show up
-// in the dashboard even without a webhook delivering them live. Runs on a
-// slower interval than pollWorkflowRuns since it's a heavier, less
-// time-sensitive sweep.
+// in the dashboard even without a webhook delivering them live. It is only
+// invoked by manual refresh because it is heavier than the active-run sweep.
 func (p *Poller) pollHistory(ctx context.Context) {
 	if p.skipForRateLimit("history") {
 		return

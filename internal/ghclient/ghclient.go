@@ -1,10 +1,9 @@
 // Package ghclient builds authenticated GitHub REST API clients for the
 // monitor. It supports two credentials, mirroring the "how it works" design:
 //
-//   - A GitHub App identity (least privilege) used for routine polling:
-//     runner pools, cache usage, workflow runs/jobs.
-//   - A separate admin PAT, used only for org-wide data the App cannot see
-//     (installed-apps inventory, audit log).
+//   - A GitHub App identity (least privilege) used for routine polling.
+//   - A separate admin PAT, used as a fallback credential and for workflow-run
+//     cancellation when configured.
 //
 // Both clients transparently target either a GHES appliance or GitHub.com/
 // GHEC based on config.Config, via go-github's NewClient(...).WithEnterpriseURLs.
@@ -31,8 +30,8 @@ type Clients struct {
 	// Nil if no App credentials are configured.
 	App *github.Client
 
-	// Admin is authenticated with the admin PAT, used only for the org app
-	// inventory / audit log. Nil if no admin token is configured.
+	// Admin is authenticated with the admin PAT. Nil if no admin token is
+	// configured.
 	Admin          *github.Client
 	RateLimit      *RateLimitTracker
 	AppRateLimit   *RateLimitTracker

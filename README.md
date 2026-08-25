@@ -13,8 +13,9 @@ for instance-targeting details and known gaps.
 - Live workflow run feed via an inbound org webhook (`workflow_run` events).
 - Periodic API polling as a backstop: sweeps all org repos for active runs
   and polls runner group capacity (busy/idle/total).
-- A minimal read-only dashboard and JSON API showing queue depth history,
-  active/queued jobs, runner group snapshots, and stored workflow runs.
+- A minimal dashboard and JSON API showing queue depth history, active/queued
+  jobs, runner group snapshots, and stored workflow runs, with guarded
+  cancellation controls for active runs.
 
 Explicitly **out of scope** for this MVP (see `GHEC_TODO.md` for notes on
 reintroducing them later): health probes, incident detection, Slack
@@ -51,7 +52,6 @@ All configuration is via environment variables (see `internal/config`):
 | `PORT` | no | `8080` | HTTP listen port. |
 | `WORKFLOW_POLL_INTERVAL` | no | `5m` | Any Go duration string. Active (queued/in_progress) run reconciliation sweep. Webhooks provide the primary live signal. |
 | `RUNNER_POLL_INTERVAL` | no | `10m` | Any Go duration string. |
-| `HISTORY_POLL_INTERVAL` | no | `30m` | Any Go duration string. Reserved for manual refresh/backfill behavior; historic runs are not scheduled automatically. |
 
 ## Running locally
 
@@ -87,6 +87,9 @@ on a persistent volume/mount so history survives redeploys.
 - `GET /api/status` — org queue depth, in-flight count, recent (1h) outcomes.
 - `GET /api/runs/recent?limit=N` — most recent workflow run states.
 - `GET /api/runners` — latest runner group capacity snapshots.
+- `GET /api/queue-depth/history?hours=N` — queued vs. in-progress snapshots for the dashboard chart.
+- `POST /api/refresh` — manually refresh active runs, recent history, and runner capacity.
+- `POST /api/runs/{run_id}/cancel` — cancel or force-cancel an active workflow run.
 - `POST /webhook/github` — inbound org webhook receiver (`workflow_run`).
 
 ## Development
