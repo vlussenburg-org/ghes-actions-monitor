@@ -32,12 +32,14 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       -webkit-font-smoothing: antialiased;
     }
-    .app { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+    .app { display: grid; grid-template-columns: 260px 1fr; height: 100vh; }
     .sidebar {
       background: var(--sidebar);
       border-right: 1px solid var(--border-soft);
       display: flex;
       flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
     }
     .brand { display: flex; gap: 0.8rem; align-items: center; padding: 1.4rem 1.25rem; border-bottom: 1px solid var(--border-soft); }
     .brand-icon {
@@ -47,7 +49,7 @@
     .brand-icon svg { width: 26px; height: 26px; display: block; }
     .brand strong { display: block; font-size: 0.98rem; letter-spacing: -0.01em; }
     .brand small { color: var(--muted); font-size: 0.78rem; }
-    .nav { padding: 0.75rem; flex: 1; }
+    .nav { padding: 0.75rem; flex: 1; overflow-y: auto; }
     .nav h3 {
       color: #5b6577; font-size: 0.68rem; letter-spacing: 0.1em; font-weight: 700;
       margin: 1.35rem 0.6rem 0.4rem; text-transform: uppercase;
