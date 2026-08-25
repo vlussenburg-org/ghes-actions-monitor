@@ -6,3 +6,4 @@ data/
 bin/
 tmp/
 .DS_Store
+.env
