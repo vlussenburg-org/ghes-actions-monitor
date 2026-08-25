@@ -262,6 +262,7 @@
             <option value="1440">24 hours</option>
           </select>
           <span class="subtitle" id="zombies-status">Not loaded yet. This page only reads stored workflow runs.</span>
+          <button id="zombies-copy-btn">📋 Copy support report</button>
         </div>
         <h2>🧟 Zombie runs</h2>
         <p class="subtitle">Runs still <code>queued</code> or <code>in_progress</code> that haven't been updated in longer than the selected window — likely stuck waiting for a runner or abandoned by GitHub.</p>
@@ -277,8 +278,9 @@
     const historyState = { hours: 24, range: '24h' };
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
-    const zombiesState = { loaded: false, minutes: 60 };
+    const zombiesState = { loaded: false, minutes: 60, runs: [] };
     let githubBaseURL = 'https://github.com';
+    let orgName = '';
     const pageNames = {
       dashboard: 'History',
       active: 'Active Jobs',
@@ -548,6 +550,7 @@
     }
 
     function renderZombies(runs) {
+      zombiesState.runs = runs || [];
       const body = document.querySelector('#zombies-table tbody');
       body.innerHTML = '';
       document.getElementById('nav-zombies').textContent = runs ? runs.length : 0;
@@ -593,6 +596,56 @@
       }
     }
 
+    function buildZombieSupportReport() {
+      const runs = zombiesState.runs || [];
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const dateLine = `${now.getUTCFullYear()}-${pad(now.getUTCMonth() + 1)}-${pad(now.getUTCDate())} ${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())} UTC`;
+
+      const rows = runs.map((r) => {
+        const repoParts = String(r.Repo || '').split('/');
+        const repoName = repoParts.length > 1 ? repoParts.slice(1).join('/') : r.Repo;
+        const runURL = `${githubBaseURL}/${encodeURI(r.Repo)}/actions/runs/${encodeURIComponent(r.RunID)}`;
+        const stuckSince = r.UpdatedAt || '';
+        const daysStuck = stuckSince ? ((now.getTime() - new Date(stuckSince).getTime()) / 86400000).toFixed(1) : '-';
+        return `| ${repoName} | [${r.RunID}](${runURL}) | ${r.Name} | ${stuckSince} | ${daysStuck} |`;
+      });
+
+      return `## GitHub Actions: Zombie Workflow Runs Requiring Support Intervention
+
+**Organization:** ${orgName || '(unset)'}
+**Date:** ${dateLine}
+**Affected Runs:** ${runs.length}
+
+### Problem
+
+The following workflow runs are stuck in \`queued\` state and cannot be cancelled
+via the API (HTTP 409/500 on cancel and force-cancel endpoints).
+These appear to be stuck at the infrastructure level and require manual intervention.
+
+### Affected Runs
+
+| Repo | Run ID | Workflow | Stuck Since | Days Stuck |
+| --- | --- | --- | --- | --- |
+${rows.join('\n')}
+`;
+    }
+
+    async function copyZombieSupportReport() {
+      const status = document.getElementById('zombies-status');
+      if (!zombiesState.runs || zombiesState.runs.length === 0) {
+        status.textContent = 'No zombie runs loaded to copy.';
+        return;
+      }
+      const report = buildZombieSupportReport();
+      try {
+        await navigator.clipboard.writeText(report);
+        status.textContent = `Support report copied to clipboard at ${new Date().toLocaleTimeString()}.`;
+      } catch (err) {
+        status.textContent = `Failed to copy report: ${err.message}`;
+      }
+    }
+
 
     async function cancelRun(repo, runID, force) {
       const action = force ? 'force cancel' : 'cancel';
@@ -633,6 +686,7 @@
         }
         const generatedAt = status.generated_at ? new Date(status.generated_at) : new Date();
         githubBaseURL = (status.github_base_url || 'https://github.com').replace(/\/+$/, '');
+        orgName = status.org || '';
         document.getElementById('org-line').textContent =
           `Org: ${status.org || '(unset)'} - updated ${generatedAt.toLocaleString()}`;
         document.getElementById('sidebar-updated').textContent =
@@ -724,6 +778,9 @@
       zombiesState.minutes = Number(e.target.value);
       zombiesState.loaded = false;
       loadZombies();
+    });
+    document.getElementById('zombies-copy-btn').addEventListener('click', () => {
+      copyZombieSupportReport();
     });
     document.getElementById('historic-prev-btn').addEventListener('click', () => {
       if (historicRunsState.page <= 1) return;
