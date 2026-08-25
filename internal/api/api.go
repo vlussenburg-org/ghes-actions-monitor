@@ -136,6 +136,7 @@ func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {
 		Offset: (page - 1) * limit,
 		SortBy: q.Get("sort"),
 		Desc:   desc,
+		Status: q.Get("status"),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to fetch recent runs")

@@ -298,6 +298,31 @@ func TestRecentRuns_SortByRepoAscending(t *testing.T) {
 	}
 }
 
+func TestRecentRuns_StatusFilter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	cases := []WorkflowRun{
+		{RunID: 1, Repo: "org/a", Status: "queued", UpdatedAt: now.Add(time.Minute)},
+		{RunID: 2, Repo: "org/b", Status: "in_progress", UpdatedAt: now.Add(2 * time.Minute)},
+		{RunID: 3, Repo: "org/c", Status: "completed", Conclusion: "success", UpdatedAt: now.Add(3 * time.Minute)},
+	}
+	for _, r := range cases {
+		if err := s.UpsertWorkflowRun(ctx, r); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	runs, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, Status: "queued"})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if total != 1 || len(runs) != 1 || runs[0].Status != "queued" {
+		t.Fatalf("expected only queued run, total=%d runs=%+v", total, runs)
+	}
+}
+
 func TestRecentRuns_UnknownSortFallsBackToUpdatedAt(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

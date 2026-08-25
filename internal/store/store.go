@@ -219,6 +219,7 @@ type RecentRunsOptions struct {
 	Offset int    // rows to skip, for pagination
 	SortBy string // one of: updated_at, repo, name, status, conclusion (defaults to updated_at)
 	Desc   bool   // sort direction; defaults to true (newest/Z-A first)
+	Status string // optional exact status filter: queued, in_progress, completed
 }
 
 // recentRunsSortColumns whitelists the columns RecentRuns may sort by, to
@@ -229,6 +230,19 @@ var recentRunsSortColumns = map[string]string{
 	"name":       "name",
 	"status":     "status",
 	"conclusion": "conclusion",
+}
+
+var recentRunsStatuses = map[string]bool{
+	"queued":      true,
+	"in_progress": true,
+	"completed":   true,
+}
+
+func statusFilterSQL(status string) string {
+	if status == "" {
+		return ""
+	}
+	return " AND w1.status = ?"
 }
 
 // RecentRuns returns the most recently updated workflow run states, paginated
@@ -244,15 +258,25 @@ func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]Workf
 	if !opts.Desc {
 		dir = "ASC"
 	}
+	status := ""
+	if recentRunsStatuses[opts.Status] {
+		status = opts.Status
+	}
 
 	var total int
-	if err := s.db.QueryRowContext(ctx, `
+	totalQuery := `
 		SELECT COUNT(*) FROM (
-			SELECT run_id FROM workflow_runs w1
+			SELECT run_id, status FROM workflow_runs w1
 			WHERE w1.id = (
 				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
 			)
-		) latest`).Scan(&total); err != nil {
+		) latest`
+	var totalArgs []any
+	if status != "" {
+		totalQuery += ` WHERE latest.status = ?`
+		totalArgs = append(totalArgs, status)
+	}
+	if err := s.db.QueryRowContext(ctx, totalQuery, totalArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count recent runs: %w", err)
 	}
 
@@ -262,10 +286,15 @@ func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]Workf
 		FROM workflow_runs w1
 		WHERE w1.id = (
 			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-		)
+		)%s
 		ORDER BY %s %s, id DESC
-		LIMIT ? OFFSET ?`, col, dir)
-	rows, err := s.db.QueryContext(ctx, query, opts.Limit, opts.Offset)
+		LIMIT ? OFFSET ?`, statusFilterSQL(status), col, dir)
+	args := []any{}
+	if status != "" {
+		args = append(args, status)
+	}
+	args = append(args, opts.Limit, opts.Offset)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query recent runs: %w", err)
 	}

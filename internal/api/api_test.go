@@ -211,7 +211,7 @@ func TestHandleRecentRuns_NegativeLimitFallsBackToDefault(t *testing.T) {
 func TestHandleRecentRuns_PageAndSort(t *testing.T) {
 	fs := &fakeStore{}
 	s := &Server{Store: fs}
-	req := httptest.NewRequest(http.MethodGet, "/api/runs/recent?page=3&limit=10&sort=repo&order=asc", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/recent?page=3&limit=10&sort=repo&order=asc&status=queued", nil)
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
 
@@ -223,6 +223,9 @@ func TestHandleRecentRuns_PageAndSort(t *testing.T) {
 	}
 	if fs.lastOpts.Desc {
 		t.Errorf("expected order=asc to set Desc=false")
+	}
+	if fs.lastOpts.Status != "queued" {
+		t.Errorf("expected status=queued, got %q", fs.lastOpts.Status)
 	}
 
 	var body map[string]any
