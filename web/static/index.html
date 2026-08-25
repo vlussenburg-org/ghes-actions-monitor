@@ -259,7 +259,10 @@
       </section>
 
       <section class="page" id="page-active" data-title="Active Jobs">
-        <h2>⚡ Active workflow runs</h2>
+        <div class="h2-row">
+          <h2>⚡ Active workflow runs</h2>
+          <button id="active-refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh">🔄</button>
+        </div>
         <table id="active-runs-table">
           <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
           <tbody></tbody>
@@ -267,7 +270,10 @@
       </section>
 
       <section class="page" id="page-queued" data-title="Queued Jobs">
-        <h2>⏳ Queued workflow runs</h2>
+        <div class="h2-row">
+          <h2>⏳ Queued workflow runs</h2>
+          <button id="queued-refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh">🔄</button>
+        </div>
         <table id="queued-runs-table">
           <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
           <tbody></tbody>
@@ -830,6 +836,12 @@ ${rows.join('\n')}
     });
     document.getElementById('now-btn').addEventListener('click', () => {
       setHistoryRange(24, '24h');
+    });
+    document.getElementById('active-refresh-btn').addEventListener('click', () => {
+      refresh();
+    });
+    document.getElementById('queued-refresh-btn').addEventListener('click', () => {
+      refresh();
     });
     document.getElementById('runners-load-btn').addEventListener('click', () => {
       runnersState.loaded = false;
