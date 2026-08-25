@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -209,7 +210,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.RunController.CancelWorkflowRun(r.Context(), request.Repo, runID, request.Force); err != nil {
-		writeError(w, http.StatusBadGateway, "failed to cancel workflow run")
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to cancel workflow run: %v", err))
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"cancelled": true, "force": request.Force})
