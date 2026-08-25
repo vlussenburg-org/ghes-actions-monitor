@@ -32,9 +32,10 @@ type Refresher interface {
 
 // Server wires up the monitor's HTTP handlers.
 type Server struct {
-	Store     Store
-	Org       string
-	Refresher Refresher
+	Store         Store
+	Org           string
+	GitHubBaseURL string
+	Refresher     Refresher
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -71,6 +72,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // of job queue depth, in-flight count, and recent build outcomes.
 type statusResponse struct {
 	Org            string           `json:"org"`
+	GitHubBaseURL  string           `json:"github_base_url"`
 	QueueDepth     store.QueueDepth `json:"queue_depth"`
 	InFlight       int              `json:"in_flight"`
 	RecentOutcomes map[string]int   `json:"recent_outcomes_1h"`
@@ -99,6 +101,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, statusResponse{
 		Org:            s.Org,
+		GitHubBaseURL:  s.GitHubBaseURL,
 		QueueDepth:     depth,
 		InFlight:       inFlight,
 		RecentOutcomes: outcomes,

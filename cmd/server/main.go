@@ -79,7 +79,11 @@ func run(logger *slog.Logger) error {
 		logger.Warn("no GitHub client configured; poller disabled")
 	}
 
-	apiServer := &api.Server{Store: st, Org: cfg.Org}
+	githubBaseURL := "https://github.com"
+	if !cfg.IsGHEC {
+		githubBaseURL = cfg.GHESBaseURL
+	}
+	apiServer := &api.Server{Store: st, Org: cfg.Org, GitHubBaseURL: githubBaseURL}
 	if p != nil {
 		apiServer.Refresher = p
 	}

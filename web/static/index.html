@@ -208,6 +208,7 @@
 
   <script>
     const historyState = { hours: 24, range: '24h' };
+    let githubBaseURL = 'https://github.com';
     const pageNames = {
       dashboard: 'Dashboard',
       active: 'Active Jobs',
@@ -323,7 +324,10 @@
       }
       for (const r of runs) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${r.Repo}</td><td>${r.Name}</td><td>${r.HeadBranch}</td>` +
+        const runURL = `${githubBaseURL}/${r.Repo}/actions/runs/${r.RunID}`;
+        tr.innerHTML = `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${r.Repo}</a></td>` +
+          `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${r.Name}</a></td>` +
+          `<td>${r.HeadBranch}</td>` +
           `<td class="status-${r.Status}">${r.Status}</td>` +
           `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
         body.append(tr);
@@ -346,13 +350,16 @@
 
         document.getElementById('error').style.display = 'none';
         const generatedAt = status.generated_at ? new Date(status.generated_at) : new Date();
+        githubBaseURL = (status.github_base_url || 'https://github.com').replace(/\/+$/, '');
         document.getElementById('org-line').textContent =
           `Org: ${status.org || '(unset)'} - updated ${generatedAt.toLocaleString()}`;
         document.getElementById('sidebar-updated').textContent =
           `${Math.max(0, Math.round((Date.now() - generatedAt.getTime()) / 60000))}m ago`;
-        document.getElementById('nav-active').textContent = status.queue_depth?.in_progress ?? 0;
-        document.getElementById('nav-queued').textContent = status.queue_depth?.queued ?? 0;
-        document.getElementById('nav-total').textContent = status.in_flight ?? 0;
+        const activeCount = status.queue_depth?.in_progress ?? 0;
+        const queuedCount = status.queue_depth?.queued ?? 0;
+        document.getElementById('nav-active').textContent = activeCount;
+        document.getElementById('nav-queued').textContent = queuedCount;
+        document.getElementById('nav-total').textContent = activeCount + queuedCount;
 
         const cards = document.getElementById('summary-cards');
         cards.innerHTML = '';
