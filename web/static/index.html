@@ -139,7 +139,7 @@
       </div>
       <nav class="nav">
         <h3>Overview</h3>
-        <button class="nav-item" data-page="dashboard">Dashboard <span class="badge active" id="nav-total">0</span></button>
+        <button class="nav-item" data-page="dashboard">Runner Groups</button>
         <h3>Jobs</h3>
         <button class="nav-item" data-page="active">Active Jobs <span class="badge active" id="nav-active">0</span></button>
         <button class="nav-item" data-page="queued">Queued Jobs <span class="badge queued" id="nav-queued">0</span></button>
@@ -152,11 +152,11 @@
     </aside>
 
     <main class="main">
-      <h1 id="page-title">History</h1>
-      <p class="subtitle" id="org-line">Active and queued job counts over time. Loading...</p>
+      <h1 id="page-title">Runner Groups</h1>
+      <p class="subtitle" id="org-line">Runner capacity and utilization. Loading...</p>
       <p id="error"></p>
 
-      <section class="page" id="page-dashboard" data-title="Dashboard">
+      <section class="page" id="page-dashboard" data-title="Runner Groups">
         <div class="grid" id="summary-cards"></div>
         <h2>Runner groups</h2>
         <table id="runners-table">
@@ -182,22 +182,7 @@
       </section>
 
       <section class="page active" id="page-history" data-title="History">
-        <div class="toolbar" id="range-toolbar">
-          <button data-hours="1" data-range="1h">1h</button>
-          <button data-hours="6" data-range="6h">6h</button>
-          <button data-hours="24" data-range="24h" class="selected">24h</button>
-          <button data-hours="72" data-range="3d">3d</button>
-          <button data-hours="168" data-range="7d">7d</button>
-          <button data-hours="168" data-range="all">All</button>
-          <button id="now-btn">Now</button>
-        </div>
-        <div class="chart-shell">
-          <div class="chart-legend">
-            <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
-            <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
-          </div>
-          <canvas id="queue-chart" width="1100" height="320"></canvas>
-        </div>
+        <h2>Scan history</h2>
         <table id="scan-table">
           <thead><tr><th>Scan Time</th><th>Active</th><th>Queued</th><th>Total</th><th>Actions Status</th></tr></thead>
           <tbody></tbody>
@@ -210,7 +195,7 @@
     const historyState = { hours: 24, range: '24h' };
     let githubBaseURL = 'https://github.com';
     const pageNames = {
-      dashboard: 'Dashboard',
+      dashboard: 'Runner Groups',
       active: 'Active Jobs',
       queued: 'Queued Jobs',
       history: 'History',
@@ -373,8 +358,6 @@
         const queuedCount = status.queue_depth?.Queued ?? 0;
         document.getElementById('nav-active').textContent = activeCount;
         document.getElementById('nav-queued').textContent = queuedCount;
-        document.getElementById('nav-total').textContent = activeCount + queuedCount;
-
         const cards = document.getElementById('summary-cards');
         cards.innerHTML = '';
         cards.append(
@@ -461,14 +444,6 @@
       }
     });
 
-    document.querySelectorAll('#range-toolbar button[data-hours]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        setHistoryRange(Number(btn.dataset.hours), btn.dataset.range);
-      });
-    });
-    document.getElementById('now-btn').addEventListener('click', () => {
-      setHistoryRange(24, '24h');
-    });
     document.querySelectorAll('.nav-item').forEach((btn) => {
       btn.addEventListener('click', () => {
         navigateToPage(btn.dataset.page);
