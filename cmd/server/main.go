@@ -72,7 +72,9 @@ func run(logger *slog.Logger) error {
 			Logger:           logger,
 			WorkflowInterval: cfg.WorkflowPollInterval,
 			RunnerInterval:   cfg.RunnerPollInterval,
-			HistoryInterval:  cfg.HistoryPollInterval,
+		}
+		if clients.RateLimit != nil {
+			p.RateLimiter = clients.RateLimit
 		}
 		go p.Run(ctx)
 	} else {
@@ -92,6 +94,7 @@ func run(logger *slog.Logger) error {
 		Org:           cfg.Org,
 		GitHubBaseURL: githubBaseURL,
 		RunController: &poller.GHClientAdapter{Client: actionClient},
+		RateLimit:     clients.RateLimit,
 	}
 	if p != nil {
 		apiServer.Refresher = p

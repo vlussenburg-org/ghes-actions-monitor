@@ -90,7 +90,7 @@ func TestHandleHealthz(t *testing.T) {
 
 func TestHandleCancelRun(t *testing.T) {
 	controller := &fakeRunController{}
-	s := &Server{Store: &fakeStore{}, RunController: controller}
+	s := &Server{Store: &fakeStore{}, RunController: controller, Org: "acme"}
 	req := httptest.NewRequest(http.MethodPost, "/api/runs/42/cancel", strings.NewReader(`{"repo":"acme/widgets","force":true}`))
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
@@ -100,6 +100,21 @@ func TestHandleCancelRun(t *testing.T) {
 	}
 	if controller.repo != "acme/widgets" || controller.runID != 42 || !controller.force {
 		t.Fatalf("unexpected cancellation request: %+v", controller)
+	}
+}
+
+func TestHandleCancelRun_RejectsDifferentOrg(t *testing.T) {
+	controller := &fakeRunController{}
+	s := &Server{Store: &fakeStore{}, RunController: controller, Org: "acme"}
+	req := httptest.NewRequest(http.MethodPost, "/api/runs/42/cancel", strings.NewReader(`{"repo":"other/widgets","force":true}`))
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if controller.repo != "" {
+		t.Fatalf("cancel should not have been called, got %+v", controller)
 	}
 }
 

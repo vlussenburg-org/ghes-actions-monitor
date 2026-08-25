@@ -99,6 +99,37 @@ func TestGHClientAdapter_ListActiveWorkflowRuns(t *testing.T) {
 	}
 }
 
+func TestGHClientAdapter_ListActiveWorkflowRuns_PaginatesPerStatus(t *testing.T) {
+	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/actions/runs") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		status := r.URL.Query().Get("status")
+		page := r.URL.Query().Get("page")
+		if status == "queued" && (page == "" || page == "1") {
+			w.Header().Set("Link", fmt.Sprintf(`<%s/repos/acme/widgets/actions/runs?status=queued&page=2>; rel="next"`, srv2URL(r)))
+			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 1, "status": "queued"}}})
+			return
+		}
+		if status == "queued" && page == "2" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 2, "status": "queued"}}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 3, "status": "in_progress"}}})
+	})
+	defer srv.Close()
+
+	runs, err := adapter.ListActiveWorkflowRuns(t.Context(), "acme", "widgets")
+	if err != nil {
+		t.Fatalf("ListActiveWorkflowRuns: %v", err)
+	}
+	if len(runs) != 3 {
+		t.Fatalf("expected paginated active runs, got %d", len(runs))
+	}
+}
+
 func TestGHClientAdapter_ListActiveWorkflowRuns_Error(t *testing.T) {
 	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

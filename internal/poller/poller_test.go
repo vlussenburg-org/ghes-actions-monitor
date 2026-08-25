@@ -91,7 +91,10 @@ type fakeStore struct {
 	snapErr           error
 	queueDepthErr     error
 	queueDepthSnapErr error
+	closeStaleErr     error
 	queueDepth        store.QueueDepth
+	closedRepos       []string
+	closedActiveIDs   map[int64]struct{}
 }
 
 func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error {
@@ -101,6 +104,17 @@ func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) 
 		return f.runErr
 	}
 	f.runs = append(f.runs, r)
+	return nil
+}
+
+func (f *fakeStore) CloseStaleActiveRuns(ctx context.Context, repos []string, activeRunIDs map[int64]struct{}, completedAt time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closeStaleErr != nil {
+		return f.closeStaleErr
+	}
+	f.closedRepos = append([]string(nil), repos...)
+	f.closedActiveIDs = activeRunIDs
 	return nil
 }
 
@@ -228,6 +242,46 @@ func TestPollWorkflowRuns_RecordsQueueDepthSnapshot(t *testing.T) {
 	}
 }
 
+func TestPollWorkflowRuns_ClosesStaleActiveRunsForSuccessfullyScannedRepos(t *testing.T) {
+	client := &fakeGitHubClient{
+		repos: []string{"bad-repo", "good-repo"},
+		activeRunsErr: map[string]error{
+			"bad-repo": errors.New("rate limited"),
+		},
+		activeRuns: map[string][]*github.WorkflowRun{
+			"good-repo": {
+				{ID: github.Int64(9), Status: strPtr("queued")},
+			},
+		},
+	}
+	st := &fakeStore{}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollWorkflowRuns(context.Background())
+
+	if len(st.closedRepos) != 1 || st.closedRepos[0] != "acme/good-repo" {
+		t.Fatalf("expected only successfully scanned repo to be reconciled, got %+v", st.closedRepos)
+	}
+	if _, ok := st.closedActiveIDs[9]; !ok {
+		t.Fatalf("expected active run 9 to be preserved during stale reconciliation, got %+v", st.closedActiveIDs)
+	}
+}
+
+func TestPollWorkflowRuns_CloseStaleErrorDoesNotSkipSnapshot(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	st := &fakeStore{
+		closeStaleErr: errors.New("db down"),
+		queueDepth:    store.QueueDepth{Queued: 1},
+	}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollWorkflowRuns(context.Background())
+
+	if len(st.queueDepthSnaps) != 1 {
+		t.Fatalf("expected queue depth snapshot even when stale close fails, got %d", len(st.queueDepthSnaps))
+	}
+}
+
 func TestPollWorkflowRuns_QueueDepthErrorDoesNotPanic(t *testing.T) {
 	client := &fakeGitHubClient{repos: []string{"widgets"}}
 	st := &fakeStore{queueDepthErr: errors.New("db down")}
@@ -337,7 +391,6 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 		Org:              "acme",
 		WorkflowInterval: time.Millisecond,
 		RunnerInterval:   time.Millisecond,
-		HistoryInterval:  time.Millisecond,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -358,9 +411,13 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 
 	client.mu.Lock()
 	calls := client.listReposCalls
+	recentCalls := client.listRecentCalls
 	client.mu.Unlock()
 	if calls == 0 {
 		t.Error("expected at least one immediate poll on startup")
+	}
+	if recentCalls != 0 {
+		t.Errorf("expected scheduled polling to skip manual-only history sweep, got %d recent run calls", recentCalls)
 	}
 }
 
@@ -474,5 +531,45 @@ func TestToStoreRun_UsesRunUpdatedAtWhenPresent(t *testing.T) {
 	}
 	if got.Repo != "acme/widgets" {
 		t.Errorf("unexpected repo: %s", got.Repo)
+	}
+}
+
+type fakeRateLimiter struct {
+	limited bool
+	resetAt time.Time
+}
+
+func (f fakeRateLimiter) RateLimited() (bool, time.Time) { return f.limited, f.resetAt }
+
+func TestPoller_SkipsSweepsWhenRateLimited(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"repo-a"}}
+	p := &Poller{
+		Client:      client,
+		Store:       &fakeStore{},
+		Org:         "acme",
+		RateLimiter: fakeRateLimiter{limited: true, resetAt: time.Now().Add(time.Hour)},
+	}
+
+	p.RefreshNow(context.Background())
+
+	if client.listReposCalls != 0 || client.listGroupsCalls != 0 {
+		t.Fatalf("expected no GitHub calls while rate limited, got repos=%d groups=%d",
+			client.listReposCalls, client.listGroupsCalls)
+	}
+}
+
+func TestPoller_PollsWhenNotRateLimited(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"repo-a"}}
+	p := &Poller{
+		Client:      client,
+		Store:       &fakeStore{},
+		Org:         "acme",
+		RateLimiter: fakeRateLimiter{limited: false},
+	}
+
+	p.RefreshNow(context.Background())
+
+	if client.listReposCalls == 0 {
+		t.Fatal("expected GitHub calls when not rate limited")
 	}
 }

@@ -38,6 +38,10 @@ type RunController interface {
 	CancelWorkflowRun(ctx context.Context, repo string, runID int64, force bool) error
 }
 
+type RateLimitProvider interface {
+	RateLimitStatus() any
+}
+
 // Server wires up the monitor's HTTP handlers.
 type Server struct {
 	Store         Store
@@ -45,6 +49,7 @@ type Server struct {
 	GitHubBaseURL string
 	Refresher     Refresher
 	RunController RunController
+	RateLimit     RateLimitProvider
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -87,6 +92,7 @@ type statusResponse struct {
 	InFlight       int              `json:"in_flight"`
 	RecentOutcomes map[string]int   `json:"recent_outcomes_1h"`
 	GeneratedAt    time.Time        `json:"generated_at"`
+	RateLimit      any              `json:"rate_limit,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -109,14 +115,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, statusResponse{
+	response := statusResponse{
 		Org:            s.Org,
 		GitHubBaseURL:  s.GitHubBaseURL,
 		QueueDepth:     depth,
 		InFlight:       inFlight,
 		RecentOutcomes: outcomes,
 		GeneratedAt:    now,
-	})
+	}
+	if s.RateLimit != nil {
+		response.RateLimit = s.RateLimit.RateLimitStatus()
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +217,10 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" ||
 		strings.ContainsAny(request.Repo, " \t\r\n") {
 		writeError(w, http.StatusBadRequest, "repo must be in owner/name format")
+		return
+	}
+	if s.Org != "" && parts[0] != s.Org {
+		writeError(w, http.StatusForbidden, "repo owner must match configured organization")
 		return
 	}
 	if err := s.RunController.CancelWorkflowRun(r.Context(), request.Repo, runID, request.Force); err != nil {

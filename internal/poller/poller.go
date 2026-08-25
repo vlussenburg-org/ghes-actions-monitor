@@ -1,9 +1,9 @@
 // Package poller periodically calls the GitHub REST API to fill in what the
 // webhook event feed doesn't carry: a full sweep of active (queued/
-// in_progress) workflow runs across every repo in the org (as a backstop
-// for missed or delayed webhook deliveries), a slower sweep of each repo's
-// recent (last 7 days) run history regardless of status (so completed runs
-// show up even without a webhook), and runner group capacity for the org.
+// in_progress) workflow runs across every repo in the org (as a backstop for
+// missed or delayed webhook deliveries), a manual refresh-only sweep of each
+// repo's recent run history regardless of status, and runner group capacity
+// for the org.
 package poller
 
 import (
@@ -20,6 +20,7 @@ import (
 // Store is the subset of store.Store the poller needs.
 type Store interface {
 	UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error
+	CloseStaleActiveRuns(ctx context.Context, repos []string, activeRunIDs map[int64]struct{}, completedAt time.Time) error
 	RecordRunnerSnapshot(ctx context.Context, r store.RunnerSnapshot) error
 	QueueDepth(ctx context.Context) (store.QueueDepth, error)
 	RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error
@@ -36,16 +37,25 @@ type GitHubClient interface {
 	ListRunnerGroupRunners(ctx context.Context, org string, groupID int64) ([]*github.Runner, error)
 }
 
+// RateLimiter reports whether the shared GitHub API budget is currently
+// exhausted. The poller consults it before starting a sweep so an exhausted
+// budget skips the sweep entirely instead of emitting one error per repo.
+type RateLimiter interface {
+	// RateLimited reports whether requests are currently blocked, and when
+	// the budget is expected to reset.
+	RateLimited() (bool, time.Time)
+}
+
 // Poller drives periodic API polling.
 type Poller struct {
-	Client GitHubClient
-	Store  Store
-	Org    string
-	Logger *slog.Logger
+	Client      GitHubClient
+	Store       Store
+	Org         string
+	Logger      *slog.Logger
+	RateLimiter RateLimiter
 
 	WorkflowInterval time.Duration
 	RunnerInterval   time.Duration
-	HistoryInterval  time.Duration
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -61,21 +71,20 @@ func (p *Poller) RefreshNow(ctx context.Context) {
 	p.pollRunners(ctx)
 }
 
-// Run blocks, polling workflow runs and runner capacity on their configured
-// intervals until ctx is cancelled.
+// Run blocks, polling active workflow runs and runner capacity on their
+// configured intervals until ctx is cancelled. Historic workflow run polling is
+// intentionally manual-only via RefreshNow because it is much more expensive
+// than the live active-run sweep.
 func (p *Poller) Run(ctx context.Context) {
-	workflowTicker := time.NewTicker(p.intervalOrDefault(p.WorkflowInterval, 30*time.Second))
+	workflowTicker := time.NewTicker(p.intervalOrDefault(p.WorkflowInterval, 5*time.Minute))
 	defer workflowTicker.Stop()
-	runnerTicker := time.NewTicker(p.intervalOrDefault(p.RunnerInterval, 60*time.Second))
+	runnerTicker := time.NewTicker(p.intervalOrDefault(p.RunnerInterval, 10*time.Minute))
 	defer runnerTicker.Stop()
-	historyTicker := time.NewTicker(p.intervalOrDefault(p.HistoryInterval, 5*time.Minute))
-	defer historyTicker.Stop()
 
 	// Run once immediately so the dashboard has data without waiting a full
 	// interval after startup.
 	p.pollWorkflowRuns(ctx)
 	p.pollRunners(ctx)
-	p.pollHistory(ctx)
 
 	for {
 		select {
@@ -85,8 +94,6 @@ func (p *Poller) Run(ctx context.Context) {
 			p.pollWorkflowRuns(ctx)
 		case <-runnerTicker.C:
 			p.pollRunners(ctx)
-		case <-historyTicker.C:
-			p.pollHistory(ctx)
 		}
 	}
 }
@@ -96,6 +103,22 @@ func (p *Poller) intervalOrDefault(d, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// skipForRateLimit reports whether a sweep should be skipped because the
+// shared GitHub budget is exhausted. Skipping avoids emitting one failed
+// request (and one error log) per repo while the quota is spent.
+func (p *Poller) skipForRateLimit(sweep string) bool {
+	if p.RateLimiter == nil {
+		return false
+	}
+	limited, resetAt := p.RateLimiter.RateLimited()
+	if !limited {
+		return false
+	}
+	p.logger().Info("poll: skipping sweep, GitHub rate limit exhausted",
+		"sweep", sweep, "reset_at", resetAt)
+	return true
 }
 
 func (p *Poller) now() time.Time {
@@ -117,23 +140,33 @@ func (p *Poller) logger() *slog.Logger {
 // backstops the webhook feed: even if a delivery is lost, the next sweep
 // picks up the run's true state.
 func (p *Poller) pollWorkflowRuns(ctx context.Context) {
+	if p.skipForRateLimit("workflow_runs") {
+		return
+	}
 	repos, err := p.Client.ListRepos(ctx, p.Org)
 	if err != nil {
 		p.logger().Error("poll: failed to list repos", "error", err)
 		return
 	}
 
+	activeRunIDs := map[int64]struct{}{}
+	var scannedRepos []string
 	for _, repo := range repos {
 		runs, err := p.Client.ListActiveWorkflowRuns(ctx, p.Org, repo)
 		if err != nil {
 			p.logger().Error("poll: failed to list workflow runs", "repo", repo, "error", err)
 			continue
 		}
+		scannedRepos = append(scannedRepos, fmt.Sprintf("%s/%s", p.Org, repo))
 		for _, r := range runs {
+			activeRunIDs[r.GetID()] = struct{}{}
 			if err := p.Store.UpsertWorkflowRun(ctx, toStoreRun(p.Org, repo, r, p.now())); err != nil {
 				p.logger().Error("poll: failed to store workflow run", "repo", repo, "run_id", r.GetID(), "error", err)
 			}
 		}
+	}
+	if err := p.Store.CloseStaleActiveRuns(ctx, scannedRepos, activeRunIDs, p.now()); err != nil {
+		p.logger().Error("poll: failed to close stale active runs", "error", err)
 	}
 
 	p.recordQueueDepthSnapshot(ctx)
@@ -161,6 +194,9 @@ func (p *Poller) recordQueueDepthSnapshot(ctx context.Context) {
 // pollRunners records a capacity snapshot for every runner group in the
 // org.
 func (p *Poller) pollRunners(ctx context.Context) {
+	if p.skipForRateLimit("runners") {
+		return
+	}
 	groups, err := p.Client.ListRunnerGroups(ctx, p.Org)
 	if err != nil {
 		p.logger().Error("poll: failed to list runner groups", "error", err)
@@ -198,10 +234,12 @@ func (p *Poller) pollRunners(ctx context.Context) {
 
 // pollHistory sweeps every repo in the org for its recent (last 7 days)
 // workflow runs regardless of status, so completed/historic runs show up
-// in the dashboard even without a webhook delivering them live. Runs on a
-// slower interval than pollWorkflowRuns since it's a heavier, less
-// time-sensitive sweep.
+// in the dashboard even without a webhook delivering them live. It is only
+// invoked by manual refresh because it is heavier than the active-run sweep.
 func (p *Poller) pollHistory(ctx context.Context) {
+	if p.skipForRateLimit("history") {
+		return
+	}
 	repos, err := p.Client.ListRepos(ctx, p.Org)
 	if err != nil {
 		p.logger().Error("poll: failed to list repos for history sweep", "error", err)
