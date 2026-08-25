@@ -325,10 +325,10 @@
           <label for="zombies-minutes-select" class="subtitle">Stale after</label>
           <select id="zombies-minutes-select">
             <option value="30">30 minutes</option>
-            <option value="60" selected>1 hour</option>
+            <option value="60">1 hour</option>
             <option value="180">3 hours</option>
             <option value="360">6 hours</option>
-            <option value="1440">24 hours</option>
+            <option value="1440" selected>24 hours</option>
           </select>
         </div>
         <div class="toolbar toolbar-actions">
@@ -347,7 +347,7 @@
     const historyState = { hours: 24, range: '24h' };
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
-    const zombiesState = { loaded: false, minutes: 60, runs: [] };
+    const zombiesState = { loaded: false, minutes: 1440, runs: [] };
     let githubBaseURL = 'https://github.com';
     let orgName = '';
     const pageNames = {
