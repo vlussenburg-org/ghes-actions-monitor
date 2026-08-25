@@ -118,6 +118,8 @@
     th.sortable .arrow { opacity: 0.7; font-size: 0.75em; }
     .pagination { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; font-size: 0.9rem; color: var(--muted); }
     .two-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+    .page { display: none; }
+    .page.active { display: block; }
     @media (max-width: 820px) {
       .app { grid-template-columns: 1fr; }
       .sidebar { display: none; }
@@ -137,11 +139,11 @@
       </div>
       <nav class="nav">
         <h3>Overview</h3>
-        <button class="nav-item" data-target="summary-cards" data-status="">Dashboard <span class="badge active" id="nav-total">0</span></button>
+        <button class="nav-item" data-page="dashboard">Dashboard <span class="badge active" id="nav-total">0</span></button>
         <h3>Jobs</h3>
-        <button class="nav-item" data-target="runs-section" data-status="in_progress">Active Jobs <span class="badge active" id="nav-active">0</span></button>
-        <button class="nav-item" data-target="runs-section" data-status="queued">Queued Jobs <span class="badge queued" id="nav-queued">0</span></button>
-        <button class="nav-item selected" data-target="history-section" data-status="">History</button>
+        <button class="nav-item" data-page="active">Active Jobs <span class="badge active" id="nav-active">0</span></button>
+        <button class="nav-item" data-page="queued">Queued Jobs <span class="badge queued" id="nav-queued">0</span></button>
+        <button class="nav-item selected" data-page="history">History</button>
       </nav>
       <div class="sidebar-footer">
         <span id="sidebar-updated">Loading...</span>
@@ -150,38 +152,12 @@
     </aside>
 
     <main class="main">
-      <h1>History</h1>
+      <h1 id="page-title">History</h1>
       <p class="subtitle" id="org-line">Active and queued job counts over time. Loading...</p>
       <p id="error"></p>
 
-      <div class="toolbar" id="range-toolbar">
-        <button data-hours="1" data-range="1h">1h</button>
-        <button data-hours="6" data-range="6h">6h</button>
-        <button data-hours="24" data-range="24h" class="selected">24h</button>
-        <button data-hours="72" data-range="3d">3d</button>
-        <button data-hours="168" data-range="7d">7d</button>
-        <button data-hours="168" data-range="all">All</button>
-        <button id="now-btn">Now</button>
-      </div>
-
-      <section class="chart-shell" id="history-section">
-        <div class="chart-legend">
-          <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
-          <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
-        </div>
-        <canvas id="queue-chart" width="1100" height="320"></canvas>
-      </section>
-
-      <section>
-        <table id="scan-table">
-          <thead><tr><th>Scan Time</th><th>Active</th><th>Queued</th><th>Total</th><th>Actions Status</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </section>
-
-      <section class="grid" id="summary-cards"></section>
-
-      <section>
+      <section class="page" id="page-dashboard" data-title="Dashboard">
+        <div class="grid" id="summary-cards"></div>
         <h2>Runner groups</h2>
         <table id="runners-table">
           <thead><tr><th>Group</th><th>Total</th><th>Busy</th><th>Idle</th></tr></thead>
@@ -189,31 +165,55 @@
         </table>
       </section>
 
-      <section id="runs-section">
-        <h2 id="runs-title">Recent workflow runs</h2>
-        <table id="runs-table">
-          <thead><tr>
-            <th class="sortable" data-sort="repo">Repo <span class="arrow"></span></th>
-            <th class="sortable" data-sort="name">Workflow <span class="arrow"></span></th>
-            <th>Branch</th>
-            <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
-            <th class="sortable" data-sort="conclusion">Conclusion <span class="arrow"></span></th>
-            <th class="sortable" data-sort="updated_at">Updated <span class="arrow"></span></th>
-          </tr></thead>
+      <section class="page" id="page-active" data-title="Active Jobs">
+        <h2>Active workflow runs</h2>
+        <table id="active-runs-table">
+          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th></tr></thead>
           <tbody></tbody>
         </table>
-        <div class="pagination">
-          <button id="prev-page">Prev</button>
-          <span id="page-info"></span>
-          <button id="next-page">Next</button>
+      </section>
+
+      <section class="page" id="page-queued" data-title="Queued Jobs">
+        <h2>Queued workflow runs</h2>
+        <table id="queued-runs-table">
+          <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Updated</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section class="page active" id="page-history" data-title="History">
+        <div class="toolbar" id="range-toolbar">
+          <button data-hours="1" data-range="1h">1h</button>
+          <button data-hours="6" data-range="6h">6h</button>
+          <button data-hours="24" data-range="24h" class="selected">24h</button>
+          <button data-hours="72" data-range="3d">3d</button>
+          <button data-hours="168" data-range="7d">7d</button>
+          <button data-hours="168" data-range="all">All</button>
+          <button id="now-btn">Now</button>
         </div>
+        <div class="chart-shell">
+          <div class="chart-legend">
+            <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
+            <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
+          </div>
+          <canvas id="queue-chart" width="1100" height="320"></canvas>
+        </div>
+        <table id="scan-table">
+          <thead><tr><th>Scan Time</th><th>Active</th><th>Queued</th><th>Total</th><th>Actions Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </section>
     </main>
   </div>
 
   <script>
-    const runsState = { page: 1, limit: 25, sort: 'updated_at', order: 'desc', total: 0, status: '' };
     const historyState = { hours: 24, range: '24h' };
+    const pageNames = {
+      dashboard: 'Dashboard',
+      active: 'Active Jobs',
+      queued: 'Queued Jobs',
+      history: 'History',
+    };
 
     async function fetchJSON(path) {
       const res = await fetch(path);
@@ -226,17 +226,6 @@
       div.className = 'card';
       div.innerHTML = `<div class="value">${value}</div><div class="label">${label}</div>`;
       return div;
-    }
-
-    function updateSortArrows() {
-      document.querySelectorAll('#runs-table th.sortable').forEach((th) => {
-        const arrow = th.querySelector('.arrow');
-        if (th.dataset.sort === runsState.sort) {
-          arrow.textContent = runsState.order === 'asc' ? '^' : 'v';
-        } else {
-          arrow.textContent = '';
-        }
-      });
     }
 
     function drawQueueChart(history) {
@@ -311,25 +300,10 @@
       selectedButton.classList.add('selected');
     }
 
-    function runsTitle() {
-      if (runsState.status === 'queued') return 'Queued workflow runs';
-      if (runsState.status === 'in_progress') return 'Active workflow runs';
-      return 'Recent workflow runs';
-    }
-
-    function updateRunsTitle() {
-      document.getElementById('runs-title').textContent = runsTitle();
-    }
-
-    function scrollToSection(id) {
-      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-
-    function setRunsStatus(status) {
-      runsState.status = status || '';
-      runsState.page = 1;
-      updateRunsTitle();
-      refresh();
+    function showPage(page) {
+      document.querySelectorAll('.page').forEach((el) => el.classList.remove('active'));
+      document.getElementById(`page-${page}`)?.classList.add('active');
+      document.getElementById('page-title').textContent = pageNames[page] || 'Dashboard';
     }
 
     function setHistoryRange(hours, range) {
@@ -338,19 +312,31 @@
       refresh();
     }
 
+    function renderJobs(tableID, runs, emptyText) {
+      const body = document.querySelector(`#${tableID} tbody`);
+      body.innerHTML = '';
+      if (!runs || runs.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="5">${emptyText}</td>`;
+        body.append(tr);
+        return;
+      }
+      for (const r of runs) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${r.Repo}</td><td>${r.Name}</td><td>${r.HeadBranch}</td>` +
+          `<td class="status-${r.Status}">${r.Status}</td>` +
+          `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
+        body.append(tr);
+      }
+    }
+
     async function refresh() {
       try {
-        const runsQuery = new URLSearchParams({
-          page: runsState.page,
-          limit: runsState.limit,
-          sort: runsState.sort,
-          order: runsState.order,
-        });
-        if (runsState.status) runsQuery.set('status', runsState.status);
-        const [status, runners, runs, queueHistory] = await Promise.all([
+        const [status, runners, activeRuns, queuedRuns, queueHistory] = await Promise.all([
           fetchJSON('/api/status'),
           fetchJSON('/api/runners'),
-          fetchJSON(`/api/runs/recent?${runsQuery}`),
+          fetchJSON('/api/runs/recent?limit=100&status=in_progress'),
+          fetchJSON('/api/runs/recent?limit=100&status=queued'),
           fetchJSON(`/api/queue-depth/history?hours=${historyState.hours}`),
         ]);
 
@@ -399,24 +385,8 @@
           runnersBody.append(tr);
         }
 
-        const runsBody = document.querySelector('#runs-table tbody');
-        runsBody.innerHTML = '';
-        for (const r of runs.runs || []) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${r.Repo}</td><td>${r.Name}</td><td>${r.HeadBranch}</td>` +
-            `<td class="status-${r.Status}">${r.Status}</td>` +
-            `<td class="status-${r.Conclusion}">${r.Conclusion || ''}</td>` +
-            `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
-          runsBody.append(tr);
-        }
-
-        runsState.total = runs.total ?? (runs.runs || []).length;
-        const totalPages = Math.max(1, Math.ceil(runsState.total / runsState.limit));
-        document.getElementById('page-info').textContent =
-          `Page ${runsState.page} of ${totalPages} (${runsState.total} runs)`;
-        document.getElementById('prev-page').disabled = runsState.page <= 1;
-        document.getElementById('next-page').disabled = runsState.page >= totalPages;
-        updateSortArrows();
+        renderJobs('active-runs-table', activeRuns.runs || [], 'No active workflow runs right now.');
+        renderJobs('queued-runs-table', queuedRuns.runs || [], 'No queued workflow runs right now.');
       } catch (err) {
         const el = document.getElementById('error');
         el.textContent = `Failed to load dashboard data: ${err.message}`;
@@ -453,33 +423,11 @@
     });
     document.getElementById('now-btn').addEventListener('click', () => {
       setHistoryRange(24, '24h');
-      scrollToSection('history-section');
     });
     document.querySelectorAll('.nav-item').forEach((btn) => {
       btn.addEventListener('click', () => {
         updateNavSelection(btn);
-        setRunsStatus(btn.dataset.status || '');
-        scrollToSection(btn.dataset.target);
-      });
-    });
-    document.getElementById('prev-page').addEventListener('click', () => {
-      if (runsState.page > 1) { runsState.page -= 1; refresh(); }
-    });
-    document.getElementById('next-page').addEventListener('click', () => {
-      const totalPages = Math.max(1, Math.ceil(runsState.total / runsState.limit));
-      if (runsState.page < totalPages) { runsState.page += 1; refresh(); }
-    });
-    document.querySelectorAll('#runs-table th.sortable').forEach((th) => {
-      th.addEventListener('click', () => {
-        const col = th.dataset.sort;
-        if (runsState.sort === col) {
-          runsState.order = runsState.order === 'asc' ? 'desc' : 'asc';
-        } else {
-          runsState.sort = col;
-          runsState.order = 'asc';
-        }
-        runsState.page = 1;
-        refresh();
+        showPage(btn.dataset.page);
       });
     });
   </script>
