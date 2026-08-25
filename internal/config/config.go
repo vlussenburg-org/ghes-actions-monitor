@@ -52,6 +52,13 @@ type Config struct {
 	// Poll intervals.
 	RunnerPollInterval   time.Duration
 	WorkflowPollInterval time.Duration
+	// WorkflowSpotCheckWindow bounds which repos count as "recently active"
+	// for the per-cycle workflow-run REST spot check: only repos with a
+	// webhook-recorded run within this window are polled, instead of every
+	// repo in the org. Keeps the sweep scaling with actual job activity
+	// rather than total repo count, since webhooks are the primary source
+	// of truth and REST polling only backstops what they might have missed.
+	WorkflowSpotCheckWindow time.Duration
 
 	// DBPath is the local SQLite database file path.
 	DBPath string
@@ -86,6 +93,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c.WorkflowPollInterval, err = getEnvDuration("WORKFLOW_POLL_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	c.WorkflowSpotCheckWindow, err = getEnvDuration("WORKFLOW_SPOT_CHECK_WINDOW", 24*time.Hour)
 	if err != nil {
 		return Config{}, err
 	}

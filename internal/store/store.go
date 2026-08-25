@@ -251,6 +251,33 @@ func (s *Store) QueueDepth(ctx context.Context) (QueueDepth, error) {
 	return d, rows.Err()
 }
 
+// RecentlyActiveRepos returns the distinct repos (in "org/repo" form) that
+// have had at least one workflow_run recorded (of any status — the webhook
+// handler writes a row for every state transition) with an updated_at at or
+// after since. The poller uses this to target its per-cycle REST spot-check
+// sweep at only the repos webhooks say have had recent job activity, instead
+// of every repo in the org, since webhooks are the primary source of truth
+// and REST polling exists only as a backstop for what they might have
+// missed (e.g. a dropped completion event turning a run into a zombie).
+func (s *Store) RecentlyActiveRepos(ctx context.Context, since time.Time) ([]string, error) {
+	const q = `SELECT DISTINCT repo FROM workflow_runs WHERE updated_at >= ?`
+	rows, err := s.db.QueryContext(ctx, q, since)
+	if err != nil {
+		return nil, fmt.Errorf("query recently active repos: %w", err)
+	}
+	defer rows.Close()
+
+	var repos []string
+	for rows.Next() {
+		var repo string
+		if err := rows.Scan(&repo); err != nil {
+			return nil, fmt.Errorf("scan recently active repo: %w", err)
+		}
+		repos = append(repos, repo)
+	}
+	return repos, rows.Err()
+}
+
 // RecentOutcomes returns conclusion counts for runs completed within the
 // given window, used to compute success/failure trend rates. Counts
 // distinct runs (by run_id, using each run's most recently recorded state)

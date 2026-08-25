@@ -95,6 +95,8 @@ type fakeStore struct {
 	queueDepth        store.QueueDepth
 	closedRepos       []string
 	closedActiveIDs   map[int64]struct{}
+	activeRepos       []string
+	activeReposErr    error
 }
 
 func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error {
@@ -147,12 +149,20 @@ func (f *fakeStore) RecordQueueDepthSnapshot(ctx context.Context, snap store.Que
 	return nil
 }
 
+func (f *fakeStore) RecentlyActiveRepos(ctx context.Context, since time.Time) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.activeReposErr != nil {
+		return nil, f.activeReposErr
+	}
+	return f.activeRepos, nil
+}
+
 func strPtr(s string) *string { return &s }
 
 func TestPollWorkflowRuns_HappyPath(t *testing.T) {
 	fixedTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := &fakeGitHubClient{
-		repos: []string{"widgets", "gadgets"},
 		activeRuns: map[string][]*github.WorkflowRun{
 			"widgets": {
 				{ID: github.Int64(1), Name: strPtr("CI"), Status: strPtr("queued"), Event: strPtr("push"), HeadBranch: strPtr("main")},
@@ -162,7 +172,7 @@ func TestPollWorkflowRuns_HappyPath(t *testing.T) {
 			},
 		},
 	}
-	st := &fakeStore{}
+	st := &fakeStore{activeRepos: []string{"acme/widgets", "acme/gadgets"}}
 	p := &Poller{Client: client, Store: st, Org: "acme", Now: func() time.Time { return fixedTime }}
 
 	p.pollWorkflowRuns(context.Background())
@@ -179,8 +189,8 @@ func TestPollWorkflowRuns_HappyPath(t *testing.T) {
 }
 
 func TestPollWorkflowRuns_ReposError(t *testing.T) {
-	client := &fakeGitHubClient{reposErr: errors.New("boom")}
-	st := &fakeStore{}
+	client := &fakeGitHubClient{}
+	st := &fakeStore{activeReposErr: errors.New("boom")}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background()) // should not panic
@@ -192,7 +202,6 @@ func TestPollWorkflowRuns_ReposError(t *testing.T) {
 
 func TestPollWorkflowRuns_PerRepoErrorContinues(t *testing.T) {
 	client := &fakeGitHubClient{
-		repos: []string{"bad-repo", "good-repo"},
 		activeRunsErr: map[string]error{
 			"bad-repo": errors.New("rate limited"),
 		},
@@ -202,7 +211,7 @@ func TestPollWorkflowRuns_PerRepoErrorContinues(t *testing.T) {
 			},
 		},
 	}
-	st := &fakeStore{}
+	st := &fakeStore{activeRepos: []string{"acme/bad-repo", "acme/good-repo"}}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background())
@@ -214,21 +223,20 @@ func TestPollWorkflowRuns_PerRepoErrorContinues(t *testing.T) {
 
 func TestPollWorkflowRuns_StoreErrorContinues(t *testing.T) {
 	client := &fakeGitHubClient{
-		repos: []string{"widgets"},
 		activeRuns: map[string][]*github.WorkflowRun{
 			"widgets": {{ID: github.Int64(1), Status: strPtr("queued")}},
 		},
 	}
-	st := &fakeStore{runErr: errors.New("db error")}
+	st := &fakeStore{runErr: errors.New("db error"), activeRepos: []string{"acme/widgets"}}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background()) // should not panic
 }
 
 func TestPollWorkflowRuns_RecordsQueueDepthSnapshot(t *testing.T) {
-	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	client := &fakeGitHubClient{}
 	fixedTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	st := &fakeStore{queueDepth: store.QueueDepth{Queued: 4, InProgress: 2}}
+	st := &fakeStore{queueDepth: store.QueueDepth{Queued: 4, InProgress: 2}, activeRepos: []string{"acme/widgets"}}
 	p := &Poller{Client: client, Store: st, Org: "acme", Now: func() time.Time { return fixedTime }}
 
 	p.pollWorkflowRuns(context.Background())
@@ -244,7 +252,6 @@ func TestPollWorkflowRuns_RecordsQueueDepthSnapshot(t *testing.T) {
 
 func TestPollWorkflowRuns_ClosesStaleActiveRunsForSuccessfullyScannedRepos(t *testing.T) {
 	client := &fakeGitHubClient{
-		repos: []string{"bad-repo", "good-repo"},
 		activeRunsErr: map[string]error{
 			"bad-repo": errors.New("rate limited"),
 		},
@@ -254,7 +261,7 @@ func TestPollWorkflowRuns_ClosesStaleActiveRunsForSuccessfullyScannedRepos(t *te
 			},
 		},
 	}
-	st := &fakeStore{}
+	st := &fakeStore{activeRepos: []string{"acme/bad-repo", "acme/good-repo"}}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background())
@@ -268,10 +275,11 @@ func TestPollWorkflowRuns_ClosesStaleActiveRunsForSuccessfullyScannedRepos(t *te
 }
 
 func TestPollWorkflowRuns_CloseStaleErrorDoesNotSkipSnapshot(t *testing.T) {
-	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	client := &fakeGitHubClient{}
 	st := &fakeStore{
 		closeStaleErr: errors.New("db down"),
 		queueDepth:    store.QueueDepth{Queued: 1},
+		activeRepos:   []string{"acme/widgets"},
 	}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
@@ -283,8 +291,8 @@ func TestPollWorkflowRuns_CloseStaleErrorDoesNotSkipSnapshot(t *testing.T) {
 }
 
 func TestPollWorkflowRuns_QueueDepthErrorDoesNotPanic(t *testing.T) {
-	client := &fakeGitHubClient{repos: []string{"widgets"}}
-	st := &fakeStore{queueDepthErr: errors.New("db down")}
+	client := &fakeGitHubClient{}
+	st := &fakeStore{queueDepthErr: errors.New("db down"), activeRepos: []string{"acme/widgets"}}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background()) // should not panic
@@ -295,8 +303,8 @@ func TestPollWorkflowRuns_QueueDepthErrorDoesNotPanic(t *testing.T) {
 }
 
 func TestPollWorkflowRuns_QueueDepthSnapshotErrorDoesNotPanic(t *testing.T) {
-	client := &fakeGitHubClient{repos: []string{"widgets"}}
-	st := &fakeStore{queueDepthSnapErr: errors.New("db down")}
+	client := &fakeGitHubClient{}
+	st := &fakeStore{queueDepthSnapErr: errors.New("db down"), activeRepos: []string{"acme/widgets"}}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background()) // should not panic
@@ -410,10 +418,10 @@ func TestRun_StopsOnContextCancel(t *testing.T) {
 	}
 
 	client.mu.Lock()
-	calls := client.listReposCalls
+	groupCalls := client.listGroupsCalls
 	recentCalls := client.listRecentCalls
 	client.mu.Unlock()
-	if calls == 0 {
+	if groupCalls == 0 {
 		t.Error("expected at least one immediate poll on startup")
 	}
 	if recentCalls != 0 {
@@ -502,7 +510,7 @@ func TestRefreshNow_RunsAllSweeps(t *testing.T) {
 		runnerGroups: []*github.RunnerGroup{{ID: github.Int64(1), Name: strPtr("default")}},
 		groupRunners: map[int64][]*github.Runner{1: {{Busy: github.Bool(true)}}},
 	}
-	st := &fakeStore{}
+	st := &fakeStore{activeRepos: []string{"acme/widgets"}}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.RefreshNow(context.Background())

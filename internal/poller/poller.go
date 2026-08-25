@@ -1,15 +1,16 @@
 // Package poller periodically calls the GitHub REST API to fill in what the
-// webhook event feed doesn't carry: a full sweep of active (queued/
-// in_progress) workflow runs across every repo in the org (as a backstop for
-// missed or delayed webhook deliveries), a manual refresh-only sweep of each
-// repo's recent run history regardless of status, and runner group capacity
-// for the org.
+// webhook event feed doesn't carry: a spot-check sweep of workflow runs,
+// scoped to only the repos webhooks say have had recent job activity (as a
+// backstop for missed or delayed webhook deliveries on repos that are
+// actually in use), a manual refresh-only sweep of each repo's recent run
+// history regardless of status, and runner group capacity for the org.
 package poller
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/go-github/v66/github"
@@ -24,6 +25,12 @@ type Store interface {
 	RecordRunnerSnapshot(ctx context.Context, r store.RunnerSnapshot) error
 	QueueDepth(ctx context.Context) (store.QueueDepth, error)
 	RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error
+	// RecentlyActiveRepos returns repos that have had a workflow_run event
+	// (any status — webhooks record every transition) recorded since the
+	// given time. The poller uses this, rather than every repo in the org,
+	// to target its per-cycle REST spot-check sweep at repos webhooks say
+	// are actually seeing job activity.
+	RecentlyActiveRepos(ctx context.Context, since time.Time) ([]string, error)
 }
 
 // GitHubClient is the subset of the go-github client surface the poller
@@ -56,6 +63,11 @@ type Poller struct {
 
 	WorkflowInterval time.Duration
 	RunnerInterval   time.Duration
+	// SpotCheckWindow bounds which repos are considered "recently active"
+	// for the per-cycle workflow-run sweep: only repos with a workflow_run
+	// recorded (any status) within this window are polled, rather than
+	// every repo in the org. Defaults to 24h.
+	SpotCheckWindow time.Duration
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -135,29 +147,36 @@ func (p *Poller) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// pollWorkflowRuns sweeps every repo in the org for active (queued/
-// in_progress) workflow runs and records their current state. This
-// backstops the webhook feed: even if a delivery is lost, the next sweep
-// picks up the run's true state.
+// pollWorkflowRuns spot-checks workflow runs for repos that webhooks say
+// have had recent activity (any run recorded within SpotCheckWindow), and
+// records their current active-run state. This backstops the webhook feed
+// for repos that are actually in use: even if a completion delivery is
+// lost, the next sweep picks up the run's true state and closes it out
+// instead of it going stale forever. Repos with no recent webhook activity
+// are not polled — if webhooks are flowing, there is nothing there for a
+// REST call to catch, and skipping them is what keeps this scaling with
+// active job volume rather than total repo count.
 func (p *Poller) pollWorkflowRuns(ctx context.Context) {
 	if p.skipForRateLimit("workflow_runs") {
 		return
 	}
-	repos, err := p.Client.ListRepos(ctx, p.Org)
+	since := p.now().Add(-p.intervalOrDefault(p.SpotCheckWindow, 24*time.Hour))
+	repos, err := p.Store.RecentlyActiveRepos(ctx, since)
 	if err != nil {
-		p.logger().Error("poll: failed to list repos", "error", err)
+		p.logger().Error("poll: failed to list recently active repos", "error", err)
 		return
 	}
 
 	activeRunIDs := map[int64]struct{}{}
 	var scannedRepos []string
-	for _, repo := range repos {
+	for _, fullRepo := range repos {
+		repo := strings.TrimPrefix(fullRepo, p.Org+"/")
 		runs, err := p.Client.ListActiveWorkflowRuns(ctx, p.Org, repo)
 		if err != nil {
 			p.logger().Error("poll: failed to list workflow runs", "repo", repo, "error", err)
 			continue
 		}
-		scannedRepos = append(scannedRepos, fmt.Sprintf("%s/%s", p.Org, repo))
+		scannedRepos = append(scannedRepos, fullRepo)
 		for _, r := range runs {
 			activeRunIDs[r.GetID()] = struct{}{}
 			if err := p.Store.UpsertWorkflowRun(ctx, toStoreRun(p.Org, repo, r, p.now())); err != nil {

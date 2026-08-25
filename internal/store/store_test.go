@@ -589,3 +589,78 @@ func TestZombieRuns_UsesLatestStatePerRun(t *testing.T) {
 		t.Errorf("expected no zombie runs (run completed since), got %+v", runs)
 	}
 }
+
+func TestRecentlyActiveRepos_ReturnsReposUpdatedSinceCutoff(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/recent", Name: "CI", Status: "completed", Conclusion: "success",
+		UpdatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 2, Repo: "org/stale", Name: "CI", Status: "completed", Conclusion: "success",
+		UpdatedAt: now.Add(-48 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	repos, err := s.RecentlyActiveRepos(ctx, now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("RecentlyActiveRepos: %v", err)
+	}
+	if len(repos) != 1 || repos[0] != "org/recent" {
+		t.Fatalf("expected only org/recent, got %+v", repos)
+	}
+}
+
+func TestRecentlyActiveRepos_DeduplicatesMultipleRunsPerRepo(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/busy", Name: "CI", Status: "queued",
+		UpdatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 2, Repo: "org/busy", Name: "CI", Status: "in_progress",
+		UpdatedAt: now.Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	repos, err := s.RecentlyActiveRepos(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("RecentlyActiveRepos: %v", err)
+	}
+	if len(repos) != 1 || repos[0] != "org/busy" {
+		t.Fatalf("expected repo listed once despite multiple runs, got %+v", repos)
+	}
+}
+
+func TestRecentlyActiveRepos_EmptyWhenNoneRecent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/stale", Name: "CI", Status: "completed", Conclusion: "success",
+		UpdatedAt: now.Add(-48 * time.Hour),
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	repos, err := s.RecentlyActiveRepos(ctx, now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("RecentlyActiveRepos: %v", err)
+	}
+	if len(repos) != 0 {
+		t.Errorf("expected no recently active repos, got %+v", repos)
+	}
+}
