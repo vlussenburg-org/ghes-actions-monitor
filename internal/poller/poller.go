@@ -21,6 +21,8 @@ import (
 type Store interface {
 	UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error
 	RecordRunnerSnapshot(ctx context.Context, r store.RunnerSnapshot) error
+	QueueDepth(ctx context.Context) (store.QueueDepth, error)
+	RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error
 }
 
 // GitHubClient is the subset of the go-github client surface the poller
@@ -132,6 +134,27 @@ func (p *Poller) pollWorkflowRuns(ctx context.Context) {
 				p.logger().Error("poll: failed to store workflow run", "repo", repo, "run_id", r.GetID(), "error", err)
 			}
 		}
+	}
+
+	p.recordQueueDepthSnapshot(ctx)
+}
+
+// recordQueueDepthSnapshot reads the current org-wide queue depth and
+// appends a point-in-time reading to the time series, so the dashboard can
+// chart queued vs in-progress jobs over time.
+func (p *Poller) recordQueueDepthSnapshot(ctx context.Context) {
+	depth, err := p.Store.QueueDepth(ctx)
+	if err != nil {
+		p.logger().Error("poll: failed to compute queue depth for snapshot", "error", err)
+		return
+	}
+	snap := store.QueueDepthSnapshot{
+		Queued:     depth.Queued,
+		InProgress: depth.InProgress,
+		CapturedAt: p.now(),
+	}
+	if err := p.Store.RecordQueueDepthSnapshot(ctx, snap); err != nil {
+		p.logger().Error("poll: failed to record queue depth snapshot", "error", err)
 	}
 }
 

@@ -188,16 +188,127 @@ func TestRecentRuns(t *testing.T) {
 		}
 	}
 
-	runs, err := s.RecentRuns(ctx, 3)
+	runs, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 3, Desc: true})
 	if err != nil {
 		t.Fatalf("RecentRuns: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("expected total=5, got %d", total)
 	}
 	if len(runs) != 3 {
 		t.Fatalf("expected 3 runs, got %d", len(runs))
 	}
-	// Most recently inserted (run_id 5) should come first.
+	// Most recently updated (run_id 5) should come first.
 	if runs[0].RunID != 5 {
 		t.Errorf("expected most recent run first (run_id=5), got %d", runs[0].RunID)
+	}
+}
+
+func TestRecentRuns_DedupesRepeatedPollsOfSameRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Same run re-recorded across multiple poll sweeps must appear once,
+	// ordered by its own updated_at, not insertion order.
+	for i := 0; i < 3; i++ {
+		if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+			RunID: 1, Repo: "org/a", Status: "completed", Conclusion: "success",
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 2, Repo: "org/b", Status: "completed", Conclusion: "success",
+		UpdatedAt: now.Add(-time.Hour), // older, but inserted last
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	runs, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 distinct runs, got %d", total)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs returned, got %d", len(runs))
+	}
+	if runs[0].RunID != 1 {
+		t.Errorf("expected run 1 (more recently updated) first, got %+v", runs)
+	}
+}
+
+func TestRecentRuns_Pagination(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for i := int64(1); i <= 5; i++ {
+		if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+			RunID: i, Repo: "org/a", Status: "completed", Conclusion: "success",
+			UpdatedAt: now.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	page1, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 2, Offset: 0, Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns page1: %v", err)
+	}
+	if total != 5 {
+		t.Errorf("expected total=5, got %d", total)
+	}
+	if len(page1) != 2 || page1[0].RunID != 5 || page1[1].RunID != 4 {
+		t.Fatalf("unexpected page1: %+v", page1)
+	}
+
+	page2, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 2, Offset: 2, Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns page2: %v", err)
+	}
+	if len(page2) != 2 || page2[0].RunID != 3 || page2[1].RunID != 2 {
+		t.Fatalf("unexpected page2: %+v", page2)
+	}
+}
+
+func TestRecentRuns_SortByRepoAscending(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	repos := []string{"zeta", "alpha", "mu"}
+	for i, repo := range repos {
+		if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+			RunID: int64(i + 1), Repo: repo, Status: "completed", Conclusion: "success", UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	runs, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "repo", Desc: false})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if len(runs) != 3 || runs[0].Repo != "alpha" || runs[1].Repo != "mu" || runs[2].Repo != "zeta" {
+		t.Fatalf("expected alphabetical repo order, got %+v", runs)
+	}
+}
+
+func TestRecentRuns_UnknownSortFallsBackToUpdatedAt(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{RunID: 1, Repo: "org/a", Status: "completed", UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if _, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "'; DROP TABLE workflow_runs; --"}); err != nil {
+		t.Fatalf("expected unknown sort column to fall back safely, got error: %v", err)
 	}
 }
 
@@ -232,5 +343,47 @@ func TestRunnerSnapshots(t *testing.T) {
 	}
 	if byGroup["gpu"].Total != 2 {
 		t.Errorf("expected 'gpu' total=2, got %d", byGroup["gpu"].Total)
+	}
+}
+
+func TestQueueDepthHistory_ReturnsOrderedSnapshotsSinceCutoff(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.RecordQueueDepthSnapshot(ctx, QueueDepthSnapshot{Queued: 5, InProgress: 2, CapturedAt: now.Add(-3 * time.Hour)}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if err := s.RecordQueueDepthSnapshot(ctx, QueueDepthSnapshot{Queued: 3, InProgress: 4, CapturedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	// Older than the lookback window; should be excluded.
+	if err := s.RecordQueueDepthSnapshot(ctx, QueueDepthSnapshot{Queued: 99, InProgress: 99, CapturedAt: now.Add(-48 * time.Hour)}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	history, err := s.QueueDepthHistory(ctx, now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("QueueDepthHistory: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("expected 2 snapshots within window, got %d: %+v", len(history), history)
+	}
+	// Oldest first.
+	if history[0].Queued != 5 || history[1].Queued != 3 {
+		t.Errorf("expected snapshots ordered oldest-first, got %+v", history)
+	}
+}
+
+func TestQueueDepthHistory_EmptyWhenNoSnapshots(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	history, err := s.QueueDepthHistory(ctx, time.Now().UTC().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("QueueDepthHistory: %v", err)
+	}
+	if len(history) != 0 {
+		t.Errorf("expected no snapshots, got %+v", history)
 	}
 }

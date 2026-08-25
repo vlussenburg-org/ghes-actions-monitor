@@ -15,6 +15,8 @@ import (
 type fakeStore struct {
 	queueDepth     store.QueueDepth
 	queueDepthErr  error
+	queueHistory   []store.QueueDepthSnapshot
+	queueHistErr   error
 	inFlight       int
 	inFlightErr    error
 	outcomes       map[string]int
@@ -24,21 +26,30 @@ type fakeStore struct {
 	runnerSnaps    []store.RunnerSnapshot
 	runnerSnapsErr error
 
-	lastLimit int
-	lastSince time.Time
+	lastOpts         store.RecentRunsOptions
+	lastSince        time.Time
+	lastHistorySince time.Time
 }
 
 func (f *fakeStore) QueueDepth(ctx context.Context) (store.QueueDepth, error) {
 	return f.queueDepth, f.queueDepthErr
 }
 
+func (f *fakeStore) QueueDepthHistory(ctx context.Context, since time.Time) ([]store.QueueDepthSnapshot, error) {
+	f.lastHistorySince = since
+	return f.queueHistory, f.queueHistErr
+}
+
 func (f *fakeStore) InFlightCount(ctx context.Context) (int, error) {
 	return f.inFlight, f.inFlightErr
 }
 
-func (f *fakeStore) RecentRuns(ctx context.Context, limit int) ([]store.WorkflowRun, error) {
-	f.lastLimit = limit
-	return f.recentRuns, f.recentRunsErr
+func (f *fakeStore) RecentRuns(ctx context.Context, opts store.RecentRunsOptions) ([]store.WorkflowRun, int, error) {
+	f.lastOpts = opts
+	if f.recentRunsErr != nil {
+		return nil, 0, f.recentRunsErr
+	}
+	return f.recentRuns, len(f.recentRuns), nil
 }
 
 func (f *fakeStore) RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error) {
@@ -138,8 +149,14 @@ func TestHandleRecentRuns_DefaultLimit(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if fs.lastLimit != 50 {
-		t.Errorf("expected default limit 50, got %d", fs.lastLimit)
+	if fs.lastOpts.Limit != 50 {
+		t.Errorf("expected default limit 50, got %d", fs.lastOpts.Limit)
+	}
+	if fs.lastOpts.Offset != 0 {
+		t.Errorf("expected default offset 0, got %d", fs.lastOpts.Offset)
+	}
+	if !fs.lastOpts.Desc {
+		t.Errorf("expected default sort direction desc")
 	}
 }
 
@@ -150,8 +167,20 @@ func TestHandleRecentRuns_CustomLimit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
 
-	if fs.lastLimit != 5 {
-		t.Errorf("expected limit 5, got %d", fs.lastLimit)
+	if fs.lastOpts.Limit != 5 {
+		t.Errorf("expected limit 5, got %d", fs.lastOpts.Limit)
+	}
+}
+
+func TestHandleRecentRuns_LimitCappedAt500(t *testing.T) {
+	fs := &fakeStore{}
+	s := &Server{Store: fs}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/recent?limit=10000", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if fs.lastOpts.Limit != 500 {
+		t.Errorf("expected limit capped at 500, got %d", fs.lastOpts.Limit)
 	}
 }
 
@@ -162,8 +191,8 @@ func TestHandleRecentRuns_InvalidLimitFallsBackToDefault(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
 
-	if fs.lastLimit != 50 {
-		t.Errorf("expected fallback to default limit 50, got %d", fs.lastLimit)
+	if fs.lastOpts.Limit != 50 {
+		t.Errorf("expected fallback to default limit 50, got %d", fs.lastOpts.Limit)
 	}
 }
 
@@ -174,8 +203,34 @@ func TestHandleRecentRuns_NegativeLimitFallsBackToDefault(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
 
-	if fs.lastLimit != 50 {
-		t.Errorf("expected fallback to default limit 50 for negative input, got %d", fs.lastLimit)
+	if fs.lastOpts.Limit != 50 {
+		t.Errorf("expected fallback to default limit 50 for negative input, got %d", fs.lastOpts.Limit)
+	}
+}
+
+func TestHandleRecentRuns_PageAndSort(t *testing.T) {
+	fs := &fakeStore{}
+	s := &Server{Store: fs}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/recent?page=3&limit=10&sort=repo&order=asc", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if fs.lastOpts.Offset != 20 {
+		t.Errorf("expected offset 20 for page 3 limit 10, got %d", fs.lastOpts.Offset)
+	}
+	if fs.lastOpts.SortBy != "repo" {
+		t.Errorf("expected sort=repo, got %q", fs.lastOpts.SortBy)
+	}
+	if fs.lastOpts.Desc {
+		t.Errorf("expected order=asc to set Desc=false")
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if int(body["page"].(float64)) != 3 {
+		t.Errorf("expected page=3 in response, got %+v", body["page"])
 	}
 }
 
@@ -256,5 +311,70 @@ func TestHandleRefresh_TriggersRefresh(t *testing.T) {
 	}
 	if refreshed, _ := body["refreshed"].(bool); !refreshed {
 		t.Errorf("expected refreshed=true in response, got %+v", body)
+	}
+}
+
+func TestHandleQueueDepthHistory_HappyPath(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	want := []store.QueueDepthSnapshot{
+		{Queued: 1, InProgress: 2, CapturedAt: now.Add(-time.Hour)},
+		{Queued: 0, InProgress: 3, CapturedAt: now},
+	}
+	fs := &fakeStore{queueHistory: want}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/queue-depth/history?hours=6", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !fs.lastHistorySince.Equal(now.Add(-6 * time.Hour)) {
+		t.Errorf("expected since=%v, got %v", now.Add(-6*time.Hour), fs.lastHistorySince)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hist, _ := body["history"].([]any)
+	if len(hist) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(hist))
+	}
+}
+
+func TestHandleQueueDepthHistory_DefaultsTo24Hours(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	fs := &fakeStore{}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/queue-depth/history", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if !fs.lastHistorySince.Equal(now.Add(-24 * time.Hour)) {
+		t.Errorf("expected default since=%v, got %v", now.Add(-24*time.Hour), fs.lastHistorySince)
+	}
+}
+
+func TestHandleQueueDepthHistory_CapsAt168Hours(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	fs := &fakeStore{}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/queue-depth/history?hours=99999", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if !fs.lastHistorySince.Equal(now.Add(-168 * time.Hour)) {
+		t.Errorf("expected capped since=%v, got %v", now.Add(-168*time.Hour), fs.lastHistorySince)
+	}
+}
+
+func TestHandleQueueDepthHistory_StoreError(t *testing.T) {
+	fs := &fakeStore{queueHistErr: errors.New("db down")}
+	s := &Server{Store: fs}
+	req := httptest.NewRequest(http.MethodGet, "/api/queue-depth/history", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
 	}
 }

@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS runner_snapshots (
 	captured_at DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runner_snapshots_captured_at ON runner_snapshots(captured_at);
+
+CREATE TABLE IF NOT EXISTS queue_depth_snapshots (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	queued INTEGER NOT NULL,
+	in_progress INTEGER NOT NULL,
+	captured_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_queue_depth_snapshots_captured_at ON queue_depth_snapshots(captured_at);
 `
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -205,15 +213,61 @@ func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string
 	return out, rows.Err()
 }
 
-// RecentRuns returns the most recently updated workflow run states, newest
-// first, capped at limit rows. Used to populate a "recent activity" list on
-// the dashboard.
-func (s *Store) RecentRuns(ctx context.Context, limit int) ([]WorkflowRun, error) {
-	rows, err := s.db.QueryContext(ctx, `
+// RecentRunsOptions controls pagination and sorting for RecentRuns.
+type RecentRunsOptions struct {
+	Limit  int    // max rows to return (defaults applied by caller)
+	Offset int    // rows to skip, for pagination
+	SortBy string // one of: updated_at, repo, name, status, conclusion (defaults to updated_at)
+	Desc   bool   // sort direction; defaults to true (newest/Z-A first)
+}
+
+// recentRunsSortColumns whitelists the columns RecentRuns may sort by, to
+// avoid building SQL from unvalidated user input.
+var recentRunsSortColumns = map[string]string{
+	"updated_at": "updated_at",
+	"repo":       "repo",
+	"name":       "name",
+	"status":     "status",
+	"conclusion": "conclusion",
+}
+
+// RecentRuns returns the most recently updated workflow run states, paginated
+// and sorted per opts, plus the total distinct-run count (for computing
+// page counts). Dedupes to each run's latest recorded state (by run_id) —
+// otherwise repeated polls of the same run would appear multiple times.
+func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]WorkflowRun, int, error) {
+	col, ok := recentRunsSortColumns[opts.SortBy]
+	if !ok {
+		col = "updated_at"
+	}
+	dir := "DESC"
+	if !opts.Desc {
+		dir = "ASC"
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT run_id FROM workflow_runs w1
+			WHERE w1.id = (
+				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+			)
+		) latest`).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count recent runs: %w", err)
+	}
+
+	// col/dir are whitelisted above, safe to interpolate.
+	query := fmt.Sprintf(`
 		SELECT run_id, repo, name, status, conclusion, event, head_branch, source, updated_at
-		FROM workflow_runs ORDER BY id DESC LIMIT ?`, limit)
+		FROM workflow_runs w1
+		WHERE w1.id = (
+			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+		)
+		ORDER BY %s %s, id DESC
+		LIMIT ? OFFSET ?`, col, dir)
+	rows, err := s.db.QueryContext(ctx, query, opts.Limit, opts.Offset)
 	if err != nil {
-		return nil, fmt.Errorf("query recent runs: %w", err)
+		return nil, 0, fmt.Errorf("query recent runs: %w", err)
 	}
 	defer rows.Close()
 
@@ -221,9 +275,56 @@ func (s *Store) RecentRuns(ctx context.Context, limit int) ([]WorkflowRun, error
 	for rows.Next() {
 		var r WorkflowRun
 		if err := rows.Scan(&r.RunID, &r.Repo, &r.Name, &r.Status, &r.Conclusion, &r.Event, &r.HeadBranch, &r.Source, &r.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan recent run row: %w", err)
+			return nil, 0, fmt.Errorf("scan recent run row: %w", err)
 		}
 		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// QueueDepthSnapshot is a point-in-time reading of org-wide queued vs
+// in-progress workflow run counts, recorded periodically so the dashboard
+// can render a queued-vs-running time series.
+type QueueDepthSnapshot struct {
+	Queued     int
+	InProgress int
+	CapturedAt time.Time
+}
+
+// RecordQueueDepthSnapshot stores a queue depth reading for the time series.
+func (s *Store) RecordQueueDepthSnapshot(ctx context.Context, snap QueueDepthSnapshot) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO queue_depth_snapshots (queued, in_progress, captured_at)
+		VALUES (?, ?, ?)`,
+		snap.Queued, snap.InProgress, snap.CapturedAt)
+	if err != nil {
+		return fmt.Errorf("record queue depth snapshot: %w", err)
+	}
+	return nil
+}
+
+// QueueDepthHistory returns queue depth snapshots recorded since the given
+// time, ordered oldest to newest, for rendering a time series chart.
+func (s *Store) QueueDepthHistory(ctx context.Context, since time.Time) ([]QueueDepthSnapshot, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT queued, in_progress, captured_at FROM queue_depth_snapshots
+		WHERE captured_at >= ?
+		ORDER BY captured_at ASC`, since)
+	if err != nil {
+		return nil, fmt.Errorf("query queue depth history: %w", err)
+	}
+	defer rows.Close()
+
+	var out []QueueDepthSnapshot
+	for rows.Next() {
+		var snap QueueDepthSnapshot
+		if err := rows.Scan(&snap.Queued, &snap.InProgress, &snap.CapturedAt); err != nil {
+			return nil, fmt.Errorf("scan queue depth snapshot: %w", err)
+		}
+		out = append(out, snap)
 	}
 	return out, rows.Err()
 }

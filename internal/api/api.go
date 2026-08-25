@@ -16,8 +16,9 @@ import (
 // Store is the subset of store.Store the API needs.
 type Store interface {
 	QueueDepth(ctx context.Context) (store.QueueDepth, error)
+	QueueDepthHistory(ctx context.Context, since time.Time) ([]store.QueueDepthSnapshot, error)
 	InFlightCount(ctx context.Context) (int, error)
-	RecentRuns(ctx context.Context, limit int) ([]store.WorkflowRun, error)
+	RecentRuns(ctx context.Context, opts store.RecentRunsOptions) ([]store.WorkflowRun, int, error)
 	RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error)
 	LatestRunnerSnapshots(ctx context.Context) ([]store.RunnerSnapshot, error)
 }
@@ -56,6 +57,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/runs/recent", s.handleRecentRuns)
 	mux.HandleFunc("GET /api/runners", s.handleRunners)
+	mux.HandleFunc("GET /api/queue-depth/history", s.handleQueueDepthHistory)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	return mux
 }
@@ -105,19 +107,46 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRecentRuns(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
 	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
+	if v := q.Get("limit"); v != "" {
 		if n, err := parsePositiveInt(v); err == nil {
 			limit = n
 		}
 	}
+	if limit > 500 {
+		limit = 500
+	}
 
-	runs, err := s.Store.RecentRuns(r.Context(), limit)
+	page := 1
+	if v := q.Get("page"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			page = n
+		}
+	}
+
+	desc := true
+	if v := q.Get("order"); v == "asc" {
+		desc = false
+	}
+
+	runs, total, err := s.Store.RecentRuns(r.Context(), store.RecentRunsOptions{
+		Limit:  limit,
+		Offset: (page - 1) * limit,
+		SortBy: q.Get("sort"),
+		Desc:   desc,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to fetch recent runs")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runs":  runs,
+		"total": total,
+		"page":  page,
+		"limit": limit,
+	})
 }
 
 func (s *Server) handleRunners(w http.ResponseWriter, r *http.Request) {
@@ -140,6 +169,29 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Refresher.RefreshNow(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"refreshed": true, "at": s.now()})
+}
+
+// handleQueueDepthHistory returns the queued-vs-in-progress time series for
+// GET /api/queue-depth/history?hours=N (default 24, capped at 168 = 7 days),
+// used to render the dashboard's queue depth chart.
+func (s *Server) handleQueueDepthHistory(w http.ResponseWriter, r *http.Request) {
+	hours := 24
+	if v := r.URL.Query().Get("hours"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			hours = n
+		}
+	}
+	if hours > 168 {
+		hours = 168
+	}
+
+	since := s.now().Add(-time.Duration(hours) * time.Hour)
+	history, err := s.Store.QueueDepthHistory(r.Context(), since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch queue depth history")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": history})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -83,11 +83,15 @@ func (f *fakeGitHubClient) ListRunnerGroupRunners(ctx context.Context, org strin
 }
 
 type fakeStore struct {
-	mu           sync.Mutex
-	runs         []store.WorkflowRun
-	runSnapshots []store.RunnerSnapshot
-	runErr       error
-	snapErr      error
+	mu                sync.Mutex
+	runs              []store.WorkflowRun
+	runSnapshots      []store.RunnerSnapshot
+	queueDepthSnaps   []store.QueueDepthSnapshot
+	runErr            error
+	snapErr           error
+	queueDepthErr     error
+	queueDepthSnapErr error
+	queueDepth        store.QueueDepth
 }
 
 func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error {
@@ -107,6 +111,25 @@ func (f *fakeStore) RecordRunnerSnapshot(ctx context.Context, r store.RunnerSnap
 		return f.snapErr
 	}
 	f.runSnapshots = append(f.runSnapshots, r)
+	return nil
+}
+
+func (f *fakeStore) QueueDepth(ctx context.Context) (store.QueueDepth, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.queueDepthErr != nil {
+		return store.QueueDepth{}, f.queueDepthErr
+	}
+	return f.queueDepth, nil
+}
+
+func (f *fakeStore) RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.queueDepthSnapErr != nil {
+		return f.queueDepthSnapErr
+	}
+	f.queueDepthSnaps = append(f.queueDepthSnaps, snap)
 	return nil
 }
 
@@ -183,6 +206,43 @@ func TestPollWorkflowRuns_StoreErrorContinues(t *testing.T) {
 		},
 	}
 	st := &fakeStore{runErr: errors.New("db error")}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollWorkflowRuns(context.Background()) // should not panic
+}
+
+func TestPollWorkflowRuns_RecordsQueueDepthSnapshot(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	fixedTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	st := &fakeStore{queueDepth: store.QueueDepth{Queued: 4, InProgress: 2}}
+	p := &Poller{Client: client, Store: st, Org: "acme", Now: func() time.Time { return fixedTime }}
+
+	p.pollWorkflowRuns(context.Background())
+
+	if len(st.queueDepthSnaps) != 1 {
+		t.Fatalf("expected 1 queue depth snapshot recorded, got %d", len(st.queueDepthSnaps))
+	}
+	snap := st.queueDepthSnaps[0]
+	if snap.Queued != 4 || snap.InProgress != 2 || !snap.CapturedAt.Equal(fixedTime) {
+		t.Errorf("unexpected snapshot: %+v", snap)
+	}
+}
+
+func TestPollWorkflowRuns_QueueDepthErrorDoesNotPanic(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	st := &fakeStore{queueDepthErr: errors.New("db down")}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollWorkflowRuns(context.Background()) // should not panic
+
+	if len(st.queueDepthSnaps) != 0 {
+		t.Errorf("expected no snapshot recorded when QueueDepth fails")
+	}
+}
+
+func TestPollWorkflowRuns_QueueDepthSnapshotErrorDoesNotPanic(t *testing.T) {
+	client := &fakeGitHubClient{repos: []string{"widgets"}}
+	st := &fakeStore{queueDepthSnapErr: errors.New("db down")}
 	p := &Poller{Client: client, Store: st, Org: "acme"}
 
 	p.pollWorkflowRuns(context.Background()) // should not panic

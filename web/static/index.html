@@ -18,8 +18,17 @@
     .status-success { color: #1a7f37; }
     .status-failure { color: #cf222e; }
     .status-in_progress, .status-queued { color: #9a6700; }
+    th.sortable { cursor: pointer; user-select: none; }
+    th.sortable:hover { color: #0969da; }
+    th.sortable .arrow { opacity: 0.5; font-size: 0.75em; }
+    .pagination { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.75rem; font-size: 0.9rem; }
+    .pagination button { padding: 0.25rem 0.75rem; }
     section { margin-bottom: 2rem; }
     #error { color: #cf222e; display: none; }
+    .chart-legend { display: flex; gap: 1.25rem; font-size: 0.85rem; margin-top: 0.5rem; }
+    .chart-legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .chart-legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    #queue-chart { border: 1px solid #ccc; border-radius: 8px; width: 100%; height: 220px; }
   </style>
 </head>
 <body>
@@ -29,6 +38,15 @@
   <p id="error"></p>
 
   <section class="grid" id="summary-cards"></section>
+
+  <section>
+    <h2>Queued vs running (last 24h)</h2>
+    <canvas id="queue-chart" width="900" height="220"></canvas>
+    <div class="chart-legend">
+      <span><span class="swatch" style="background:#9a6700"></span> Queued</span>
+      <span><span class="swatch" style="background:#1a7f37"></span> In progress</span>
+    </div>
+  </section>
 
   <section>
     <h2>Runner groups</h2>
@@ -41,12 +59,26 @@
   <section>
     <h2>Recent workflow runs</h2>
     <table id="runs-table">
-      <thead><tr><th>Repo</th><th>Workflow</th><th>Branch</th><th>Status</th><th>Conclusion</th><th>Updated</th></tr></thead>
+      <thead><tr>
+        <th class="sortable" data-sort="repo">Repo <span class="arrow"></span></th>
+        <th class="sortable" data-sort="name">Workflow <span class="arrow"></span></th>
+        <th>Branch</th>
+        <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
+        <th class="sortable" data-sort="conclusion">Conclusion <span class="arrow"></span></th>
+        <th class="sortable" data-sort="updated_at">Updated <span class="arrow"></span></th>
+      </tr></thead>
       <tbody></tbody>
     </table>
+    <div class="pagination">
+      <button id="prev-page">← Prev</button>
+      <span id="page-info"></span>
+      <button id="next-page">Next →</button>
+    </div>
   </section>
 
   <script>
+    const runsState = { page: 1, limit: 25, sort: 'updated_at', order: 'desc', total: 0 };
+
     async function fetchJSON(path) {
       const res = await fetch(path);
       if (!res.ok) throw new Error(`${path} returned ${res.status}`);
@@ -60,13 +92,84 @@
       return div;
     }
 
+    function updateSortArrows() {
+      document.querySelectorAll('#runs-table th.sortable').forEach((th) => {
+        const arrow = th.querySelector('.arrow');
+        if (th.dataset.sort === runsState.sort) {
+          arrow.textContent = runsState.order === 'asc' ? '▲' : '▼';
+        } else {
+          arrow.textContent = '';
+        }
+      });
+    }
+
+    function drawQueueChart(history) {
+      const canvas = document.getElementById('queue-chart');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      if (!history || history.length === 0) {
+        ctx.fillStyle = '#666';
+        ctx.font = '13px sans-serif';
+        ctx.fillText('No data yet', 10, h / 2);
+        return;
+      }
+
+      const padding = { top: 10, right: 10, bottom: 20, left: 30 };
+      const plotW = w - padding.left - padding.right;
+      const plotH = h - padding.top - padding.bottom;
+
+      const times = history.map((p) => new Date(p.CapturedAt).getTime());
+      const minT = Math.min(...times), maxT = Math.max(...times);
+      const maxVal = Math.max(1, ...history.map((p) => Math.max(p.Queued, p.InProgress)));
+
+      const x = (t) => padding.left + (maxT === minT ? 0 : ((t - minT) / (maxT - minT)) * plotW);
+      const y = (v) => padding.top + plotH - (v / maxVal) * plotH;
+
+      // Axes.
+      ctx.strokeStyle = '#ddd';
+      ctx.beginPath();
+      ctx.moveTo(padding.left, padding.top);
+      ctx.lineTo(padding.left, padding.top + plotH);
+      ctx.lineTo(padding.left + plotW, padding.top + plotH);
+      ctx.stroke();
+      ctx.fillStyle = '#666';
+      ctx.font = '10px sans-serif';
+      ctx.fillText(String(maxVal), 2, padding.top + 8);
+      ctx.fillText('0', 2, padding.top + plotH);
+
+      function drawLine(key, color) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        history.forEach((p, i) => {
+          const px = x(new Date(p.CapturedAt).getTime());
+          const py = y(p[key]);
+          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.stroke();
+      }
+      drawLine('Queued', '#9a6700');
+      drawLine('InProgress', '#1a7f37');
+    }
+
     async function refresh() {
       try {
-        const [status, runners, runs] = await Promise.all([
+        const runsQuery = new URLSearchParams({
+          page: runsState.page,
+          limit: runsState.limit,
+          sort: runsState.sort,
+          order: runsState.order,
+        });
+        const [status, runners, runs, queueHistory] = await Promise.all([
           fetchJSON('/api/status'),
           fetchJSON('/api/runners'),
-          fetchJSON('/api/runs/recent?limit=25'),
+          fetchJSON(`/api/runs/recent?${runsQuery}`),
+          fetchJSON('/api/queue-depth/history?hours=24'),
         ]);
+
+        drawQueueChart(queueHistory.history || []);
 
         document.getElementById('error').style.display = 'none';
         document.getElementById('org-line').textContent =
@@ -100,6 +203,14 @@
             `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
           runsBody.append(tr);
         }
+
+        runsState.total = runs.total ?? (runs.runs || []).length;
+        const totalPages = Math.max(1, Math.ceil(runsState.total / runsState.limit));
+        document.getElementById('page-info').textContent =
+          `Page ${runsState.page} of ${totalPages} (${runsState.total} runs)`;
+        document.getElementById('prev-page').disabled = runsState.page <= 1;
+        document.getElementById('next-page').disabled = runsState.page >= totalPages;
+        updateSortArrows();
       } catch (err) {
         const el = document.getElementById('error');
         el.textContent = `Failed to load dashboard data: ${err.message}`;
@@ -127,6 +238,27 @@
         btn.disabled = false;
         btn.textContent = originalText;
       }
+    });
+
+    document.getElementById('prev-page').addEventListener('click', () => {
+      if (runsState.page > 1) { runsState.page -= 1; refresh(); }
+    });
+    document.getElementById('next-page').addEventListener('click', () => {
+      const totalPages = Math.max(1, Math.ceil(runsState.total / runsState.limit));
+      if (runsState.page < totalPages) { runsState.page += 1; refresh(); }
+    });
+    document.querySelectorAll('#runs-table th.sortable').forEach((th) => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.sort;
+        if (runsState.sort === col) {
+          runsState.order = runsState.order === 'asc' ? 'desc' : 'asc';
+        } else {
+          runsState.sort = col;
+          runsState.order = 'asc';
+        }
+        runsState.page = 1;
+        refresh();
+      });
     });
   </script>
 </body>
