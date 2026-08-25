@@ -96,7 +96,7 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.Port != "8080" {
 		t.Errorf("expected default port 8080, got %q", c.Port)
 	}
-	if c.RunnerPollInterval != 60*time.Second {
+	if c.RunnerPollInterval != 10*time.Minute {
 		t.Errorf("unexpected default runner poll interval: %v", c.RunnerPollInterval)
 	}
 	if c.HasAppCredentials() {

@@ -76,11 +76,17 @@ func (a *GHClientAdapter) ListActiveWorkflowRuns(ctx context.Context, owner, rep
 			Status:      status,
 			ListOptions: github.ListOptions{PerPage: 100},
 		}
-		runs, _, err := a.Client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
-		if err != nil {
-			return nil, fmt.Errorf("list workflow runs for %s/%s (status=%s): %w", owner, repo, status, err)
+		for {
+			runs, resp, err := a.Client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
+			if err != nil {
+				return nil, fmt.Errorf("list workflow runs for %s/%s (status=%s): %w", owner, repo, status, err)
+			}
+			all = append(all, runs.WorkflowRuns...)
+			if resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
 		}
-		all = append(all, runs.WorkflowRuns...)
 	}
 	return all, nil
 }

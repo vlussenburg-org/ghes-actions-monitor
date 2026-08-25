@@ -13,7 +13,8 @@ for instance-targeting details and known gaps.
 - Live workflow run feed via an inbound org webhook (`workflow_run` events).
 - Periodic API polling as a backstop: sweeps all org repos for active runs
   and polls runner group capacity (busy/idle/total).
-- A minimal read-only dashboard and JSON API showing the above.
+- A minimal read-only dashboard and JSON API showing queue depth history,
+  active/queued jobs, runner group snapshots, and stored workflow runs.
 
 Explicitly **out of scope** for this MVP (see `GHEC_TODO.md` for notes on
 reintroducing them later): health probes, incident detection, Slack
@@ -27,7 +28,8 @@ version is a single admin PAT (no OAuth yet).
    most reliable signal.
 2. **Poller (pull)** — on a schedule, calls the GitHub REST API to sweep for
    active workflow runs (backstop for missed webhook deliveries) and to
-   snapshot runner group capacity.
+   snapshot runner group capacity. Historic run backfill is manual-only via
+   the dashboard's **Refresh** action.
 3. **Store** — everything is persisted to a local SQLite database
    (pure Go driver, no CGO) so history survives restarts/redeploys. Point
    `DB_PATH` at a mounted volume in production.
@@ -47,9 +49,9 @@ All configuration is via environment variables (see `internal/config`):
 | `GITHUB_WEBHOOK_SECRET` | no | — | HMAC secret for verifying inbound webhook deliveries. Strongly recommended in production. |
 | `DB_PATH` | no | `data/monitor.db` | SQLite database file path. |
 | `PORT` | no | `8080` | HTTP listen port. |
-| `WORKFLOW_POLL_INTERVAL` | no | `30s` | Any Go duration string. Active (queued/in_progress) run sweep. |
-| `RUNNER_POLL_INTERVAL` | no | `60s` | Any Go duration string. |
-| `HISTORY_POLL_INTERVAL` | no | `5m` | Any Go duration string. Backfills completed/historic runs from the last 7 days per repo (unpaginated, first 100 per repo) so history is visible even without a webhook configured. |
+| `WORKFLOW_POLL_INTERVAL` | no | `5m` | Any Go duration string. Active (queued/in_progress) run reconciliation sweep. Webhooks provide the primary live signal. |
+| `RUNNER_POLL_INTERVAL` | no | `10m` | Any Go duration string. |
+| `HISTORY_POLL_INTERVAL` | no | `30m` | Any Go duration string. Reserved for manual refresh/backfill behavior; historic runs are not scheduled automatically. |
 
 ## Running locally
 

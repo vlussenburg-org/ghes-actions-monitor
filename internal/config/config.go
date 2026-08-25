@@ -82,15 +82,15 @@ func Load() (Config, error) {
 	}
 	c.AppPrivateKeyPEM = os.Getenv("GITHUB_APP_PRIVATE_KEY")
 
-	c.RunnerPollInterval, err = getEnvDuration("RUNNER_POLL_INTERVAL", 60*time.Second)
+	c.RunnerPollInterval, err = getEnvDuration("RUNNER_POLL_INTERVAL", 10*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
-	c.WorkflowPollInterval, err = getEnvDuration("WORKFLOW_POLL_INTERVAL", 30*time.Second)
+	c.WorkflowPollInterval, err = getEnvDuration("WORKFLOW_POLL_INTERVAL", 5*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
-	c.HistoryPollInterval, err = getEnvDuration("HISTORY_POLL_INTERVAL", 5*time.Minute)
+	c.HistoryPollInterval, err = getEnvDuration("HISTORY_POLL_INTERVAL", 30*time.Minute)
 	if err != nil {
 		return Config{}, err
 	}

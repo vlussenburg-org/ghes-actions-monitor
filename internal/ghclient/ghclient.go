@@ -15,6 +15,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -32,7 +33,100 @@ type Clients struct {
 
 	// Admin is authenticated with the admin PAT, used only for the org app
 	// inventory / audit log. Nil if no admin token is configured.
-	Admin *github.Client
+	Admin          *github.Client
+	RateLimit      *RateLimitTracker
+	AppRateLimit   *RateLimitTracker
+	AdminRateLimit *RateLimitTracker
+}
+
+type RateLimitStatus struct {
+	Remaining int       `json:"remaining"`
+	Limit     int       `json:"limit"`
+	ResetAt   time.Time `json:"reset_at"`
+}
+
+type RateLimitTracker struct {
+	mu           sync.RWMutex
+	status       RateLimitStatus
+	backoffUntil time.Time
+	base         http.RoundTripper
+}
+
+func (t *RateLimitTracker) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := t.wait(req.Context()); err != nil {
+		return nil, err
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if resp != nil {
+		t.mu.Lock()
+		if v, e := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining")); e == nil {
+			t.status.Remaining = v
+		}
+		if v, e := strconv.Atoi(resp.Header.Get("X-RateLimit-Limit")); e == nil {
+			t.status.Limit = v
+		}
+		if v, e := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); e == nil {
+			t.status.ResetAt = time.Unix(v, 0).UTC()
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if v, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil {
+				t.backoffUntil = time.Now().Add(time.Duration(v) * time.Second)
+			} else if !t.status.ResetAt.IsZero() {
+				t.backoffUntil = t.status.ResetAt
+			}
+		}
+		t.mu.Unlock()
+	}
+	return resp, err
+}
+
+func (t *RateLimitTracker) wait(ctx context.Context) error {
+	t.mu.RLock()
+	until := t.backoffUntil
+	if t.status.Remaining <= 0 && !t.status.ResetAt.IsZero() && t.status.ResetAt.After(until) {
+		until = t.status.ResetAt
+	}
+	t.mu.RUnlock()
+	if until.IsZero() || !until.After(time.Now()) {
+		return nil
+	}
+	timer := time.NewTimer(time.Until(until))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (t *RateLimitTracker) RateLimitStatus() any {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.status.Limit == 0 && t.status.ResetAt.IsZero() {
+		return nil
+	}
+	return t.status
+}
+
+// RateLimited reports whether the budget is currently spent, along with the
+// time it is expected to reset. Callers use this to skip optional work rather
+// than issuing requests that are certain to fail.
+func (t *RateLimitTracker) RateLimited() (bool, time.Time) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	if t.backoffUntil.After(now) {
+		return true, t.backoffUntil
+	}
+	if t.status.Remaining <= 0 && t.status.ResetAt.After(now) {
+		return true, t.status.ResetAt
+	}
+	return false, time.Time{}
 }
 
 // New builds the configured clients for the given instance (GHES or GHEC,
@@ -40,9 +134,9 @@ type Clients struct {
 // auto-refreshing installation-token transport (see appTransport below).
 func New(cfg config.Config) (*Clients, error) {
 	c := &Clients{}
-
 	if cfg.HasAppCredentials() {
-		appClient, err := newAppClient(cfg)
+		c.AppRateLimit = &RateLimitTracker{}
+		appClient, err := newAppClient(cfg, c.AppRateLimit)
 		if err != nil {
 			return nil, fmt.Errorf("build app client: %w", err)
 		}
@@ -50,21 +144,27 @@ func New(cfg config.Config) (*Clients, error) {
 	}
 
 	if cfg.AdminToken != "" {
-		adminClient, err := newTokenClient(cfg, cfg.AdminToken)
+		c.AdminRateLimit = &RateLimitTracker{}
+		adminClient, err := newTokenClient(cfg, cfg.AdminToken, c.AdminRateLimit)
 		if err != nil {
 			return nil, fmt.Errorf("build admin client: %w", err)
 		}
 		c.Admin = adminClient
 	}
 
+	if c.AppRateLimit != nil {
+		c.RateLimit = c.AppRateLimit
+	} else {
+		c.RateLimit = c.AdminRateLimit
+	}
 	return c, nil
 }
 
 // newTokenClient builds a go-github client authenticated with a static
 // bearer token (used for the admin PAT), pointed at the resolved GHES/GHEC
 // REST and upload base URLs.
-func newTokenClient(cfg config.Config, token string) (*github.Client, error) {
-	base := github.NewClient(nil).WithAuthToken(token)
+func newTokenClient(cfg config.Config, token string, tracker *RateLimitTracker) (*github.Client, error) {
+	base := github.NewClient(&http.Client{Transport: tracker}).WithAuthToken(token)
 	return withEnterpriseURLs(base, cfg)
 }
 
@@ -86,7 +186,7 @@ func withEnterpriseURLs(base *github.Client, cfg config.Config) (*github.Client,
 // newAppClient builds a client authenticated as the configured GitHub App
 // installation, using appTransport to mint and cache short-lived
 // installation access tokens (POST /app/installations/{id}/access_tokens).
-func newAppClient(cfg config.Config) (*github.Client, error) {
+func newAppClient(cfg config.Config, tracker *RateLimitTracker) (*github.Client, error) {
 	key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(cfg.AppPrivateKeyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("parse app private key: %w", err)
@@ -95,14 +195,14 @@ func newAppClient(cfg config.Config) (*github.Client, error) {
 	// Build a plain client (pointed at the right instance) to mint
 	// installation tokens against, then wrap its transport so every
 	// request carries a valid, auto-refreshed installation token.
-	seed := github.NewClient(nil)
+	seed := github.NewClient(&http.Client{Transport: tracker})
 	seed, err = withEnterpriseURLs(seed, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	t := &appTransport{
-		base:           http.DefaultTransport,
+		base:           tracker,
 		client:         seed,
 		appID:          cfg.AppID,
 		installationID: cfg.AppInstallationID,

@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go sqlite driver, no cgo required
@@ -119,6 +120,58 @@ func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 	return nil
 }
 
+// CloseStaleActiveRuns marks latest queued/in_progress runs as stale when a
+// successful active-run sweep no longer sees them. This keeps queue depth
+// accurate when a webhook completion delivery was missed, without fetching
+// every completed run on a schedule.
+func (s *Store) CloseStaleActiveRuns(ctx context.Context, repos []string, activeRunIDs map[int64]struct{}, completedAt time.Time) error {
+	if len(repos) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(repos)), ",")
+	args := make([]any, 0, len(repos))
+	for _, repo := range repos {
+		args = append(args, repo)
+	}
+	query := fmt.Sprintf(`
+		SELECT run_id, repo, name, event, head_branch
+		FROM workflow_runs w1
+		WHERE w1.id = (
+			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+		)
+		AND w1.status IN ('queued', 'in_progress')
+		AND w1.repo IN (%s)`, placeholders)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query stale active runs: %w", err)
+	}
+	defer rows.Close()
+
+	var stale []WorkflowRun
+	for rows.Next() {
+		var r WorkflowRun
+		if err := rows.Scan(&r.RunID, &r.Repo, &r.Name, &r.Event, &r.HeadBranch); err != nil {
+			return fmt.Errorf("scan stale active run: %w", err)
+		}
+		if _, stillActive := activeRunIDs[r.RunID]; stillActive {
+			continue
+		}
+		r.Status = "stale"
+		r.Source = "poll"
+		r.UpdatedAt = completedAt
+		stale = append(stale, r)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate stale active runs: %w", err)
+	}
+	for _, r := range stale {
+		if err := s.UpsertWorkflowRun(ctx, r); err != nil {
+			return fmt.Errorf("close stale active run %d: %w", r.RunID, err)
+		}
+	}
+	return nil
+}
+
 // InFlightCount returns the number of distinct runs currently in a
 // non-terminal status ("queued" or "in_progress"), based on each run's most
 // recent recorded state.
@@ -194,7 +247,7 @@ func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string
 				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
 			)
 		) latest
-		WHERE latest.status = 'completed' AND latest.updated_at >= ?
+		WHERE latest.status = 'completed' AND latest.conclusion <> '' AND latest.updated_at >= ?
 		GROUP BY conclusion`, since)
 	if err != nil {
 		return nil, fmt.Errorf("query recent outcomes: %w", err)

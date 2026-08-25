@@ -105,6 +105,55 @@ func TestQueueDepth(t *testing.T) {
 	}
 }
 
+func TestCloseStaleActiveRuns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for _, r := range []WorkflowRun{
+		{RunID: 1, Repo: "org/a", Name: "CI", Status: "in_progress", UpdatedAt: now.Add(-time.Minute)},
+		{RunID: 2, Repo: "org/a", Name: "Deploy", Status: "queued", UpdatedAt: now.Add(-time.Minute)},
+		{RunID: 3, Repo: "org/b", Name: "CI", Status: "in_progress", UpdatedAt: now.Add(-time.Minute)},
+	} {
+		if err := s.UpsertWorkflowRun(ctx, r); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	completedAt := now.Add(time.Minute)
+	if err := s.CloseStaleActiveRuns(ctx, []string{"org/a"}, map[int64]struct{}{2: {}}, completedAt); err != nil {
+		t.Fatalf("CloseStaleActiveRuns: %v", err)
+	}
+
+	runs, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "updated_at", Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 latest runs, got %d", total)
+	}
+	byID := map[int64]WorkflowRun{}
+	for _, r := range runs {
+		byID[r.RunID] = r
+	}
+	if byID[1].Status != "stale" || !byID[1].UpdatedAt.Equal(completedAt) {
+		t.Fatalf("expected stale org/a run 1 to be marked stale at %v, got %+v", completedAt, byID[1])
+	}
+	if byID[2].Status != "queued" {
+		t.Fatalf("expected still-active run 2 to stay queued, got %+v", byID[2])
+	}
+	if byID[3].Status != "in_progress" {
+		t.Fatalf("expected unscanned org/b run 3 to stay in_progress, got %+v", byID[3])
+	}
+}
+
+func TestCloseStaleActiveRuns_NoReposIsNoop(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CloseStaleActiveRuns(context.Background(), nil, nil, time.Now()); err != nil {
+		t.Fatalf("CloseStaleActiveRuns: %v", err)
+	}
+}
+
 func TestQueueDepth_Empty(t *testing.T) {
 	s := newTestStore(t)
 	d, err := s.QueueDepth(context.Background())
@@ -128,6 +177,7 @@ func TestRecentOutcomes(t *testing.T) {
 		{RunID: 3, Repo: "org/a", Status: "completed", Conclusion: "failure", UpdatedAt: now},
 		{RunID: 4, Repo: "org/a", Status: "queued", UpdatedAt: now},                                               // not completed, excluded
 		{RunID: 5, Repo: "org/a", Status: "completed", Conclusion: "success", UpdatedAt: now.Add(-2 * time.Hour)}, // too old
+		{RunID: 6, Repo: "org/a", Status: "completed", UpdatedAt: now},                                            // unknown conclusion, excluded
 	}
 	for _, r := range runs {
 		if err := s.UpsertWorkflowRun(ctx, r); err != nil {

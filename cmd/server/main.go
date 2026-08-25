@@ -74,6 +74,9 @@ func run(logger *slog.Logger) error {
 			RunnerInterval:   cfg.RunnerPollInterval,
 			HistoryInterval:  cfg.HistoryPollInterval,
 		}
+		if clients.RateLimit != nil {
+			p.RateLimiter = clients.RateLimit
+		}
 		go p.Run(ctx)
 	} else {
 		logger.Warn("no GitHub client configured; poller disabled")
@@ -92,6 +95,7 @@ func run(logger *slog.Logger) error {
 		Org:           cfg.Org,
 		GitHubBaseURL: githubBaseURL,
 		RunController: &poller.GHClientAdapter{Client: actionClient},
+		RateLimit:     clients.RateLimit,
 	}
 	if p != nil {
 		apiServer.Refresher = p

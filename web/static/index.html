@@ -115,6 +115,7 @@
     .status-success, .status-operational, .active-text { color: var(--active); font-weight: 750; }
     .status-failure { color: var(--danger); font-weight: 750; }
     .status-in_progress, .status-queued, .queued-text { color: var(--queued); font-weight: 750; }
+    .status-stale { color: var(--muted); font-weight: 750; }
     th.sortable { cursor: pointer; user-select: none; }
     th.sortable:hover { color: #334155; }
     th.sortable .arrow { opacity: 0.7; font-size: 0.75em; }
@@ -145,11 +146,13 @@
       </div>
       <nav class="nav">
         <h3>Overview</h3>
-        <button class="nav-item" data-page="dashboard"><span class="nav-icon" aria-hidden="true">🖥️</span>Runner Groups</button>
+        <button class="nav-item selected" data-page="dashboard"><span class="nav-icon" aria-hidden="true">📈</span>History</button>
         <h3>Jobs</h3>
         <button class="nav-item" data-page="active"><span class="nav-icon" aria-hidden="true">⚡</span>Active Jobs <span class="badge active" id="nav-active">0</span></button>
         <button class="nav-item" data-page="queued"><span class="nav-icon" aria-hidden="true">⏳</span>Queued Jobs <span class="badge queued" id="nav-queued">0</span></button>
-        <button class="nav-item selected" data-page="history"><span class="nav-icon" aria-hidden="true">📜</span>History</button>
+        <button class="nav-item" data-page="historic-runs"><span class="nav-icon" aria-hidden="true">📜</span>Historic Runs</button>
+        <h3>Infrastructure</h3>
+        <button class="nav-item" data-page="runners"><span class="nav-icon" aria-hidden="true">🖥️</span>Runner Groups</button>
       </nav>
       <div class="sidebar-footer">
         <span id="sidebar-updated">Loading...</span>
@@ -158,12 +161,40 @@
     </aside>
 
     <main class="main">
-      <h1 id="page-title">Runner Groups</h1>
-      <p class="subtitle" id="org-line">Runner capacity and utilization. Loading...</p>
+      <h1 id="page-title">History</h1>
+      <p class="subtitle" id="org-line">Actions queue depth and workflow history. Loading...</p>
       <p id="error"></p>
 
-      <section class="page" id="page-dashboard" data-title="Runner Groups">
+      <section class="page active" id="page-dashboard" data-title="History">
         <div class="grid" id="summary-cards"></div>
+        <div class="toolbar" id="range-toolbar">
+          <button data-hours="1" data-range="1h">1h</button>
+          <button data-hours="6" data-range="6h">6h</button>
+          <button data-hours="24" data-range="24h" class="selected">24h</button>
+          <button data-hours="72" data-range="3d">3d</button>
+          <button data-hours="168" data-range="7d">7d</button>
+          <button data-hours="168" data-range="all">All</button>
+          <button id="now-btn">Now</button>
+        </div>
+        <div class="chart-shell">
+          <div class="chart-legend">
+            <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
+            <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
+          </div>
+          <canvas id="queue-chart" width="1100" height="320"></canvas>
+        </div>
+        <h2>📈 Scan history</h2>
+        <table id="scan-table">
+          <thead><tr><th>Scan Time</th><th>Active</th><th>Queued</th><th>Total</th><th>Actions Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section class="page" id="page-runners" data-title="Runner Groups">
+        <div class="toolbar">
+          <button id="runners-load-btn">Reload from database</button>
+          <span class="subtitle" id="runners-status">Not loaded yet. This page only reads stored runner snapshots.</span>
+        </div>
         <h2>🖥️ Runner groups</h2>
         <table id="runners-table">
           <thead><tr><th>Group</th><th>Total</th><th>Busy</th><th>Idle</th></tr></thead>
@@ -187,46 +218,68 @@
         </table>
       </section>
 
-      <section class="page active" id="page-history" data-title="History">
-        <div class="toolbar" id="range-toolbar">
-          <button data-hours="1" data-range="1h">1h</button>
-          <button data-hours="6" data-range="6h">6h</button>
-          <button data-hours="24" data-range="24h" class="selected">24h</button>
-          <button data-hours="72" data-range="3d">3d</button>
-          <button data-hours="168" data-range="7d">7d</button>
-          <button data-hours="168" data-range="all">All</button>
-          <button id="now-btn">Now</button>
+      <section class="page" id="page-historic-runs" data-title="Historic Runs">
+        <div class="toolbar">
+          <button id="historic-runs-load-btn">Reload from database</button>
+          <span class="subtitle" id="historic-runs-status">Not loaded yet. This page only reads stored workflow runs.</span>
         </div>
-        <div class="chart-shell">
-          <div class="chart-legend">
-            <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
-            <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
-          </div>
-          <canvas id="queue-chart" width="1100" height="320"></canvas>
-        </div>
-        <h2>📜 Scan history</h2>
-        <table id="scan-table">
-          <thead><tr><th>Scan Time</th><th>Active</th><th>Queued</th><th>Total</th><th>Actions Status</th></tr></thead>
+        <table id="historic-runs-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="repo">Repo <span class="arrow"></span></th>
+              <th class="sortable" data-sort="name">Workflow <span class="arrow"></span></th>
+              <th>Branch</th>
+              <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
+              <th>Conclusion</th>
+              <th>Event</th>
+              <th>Source</th>
+              <th class="sortable" data-sort="updated_at">Updated <span class="arrow"></span></th>
+            </tr>
+          </thead>
           <tbody></tbody>
         </table>
+        <div class="pagination">
+          <button id="historic-prev-btn">Previous</button>
+          <span id="historic-page-label">Page 1</span>
+          <button id="historic-next-btn">Next</button>
+        </div>
       </section>
     </main>
   </div>
 
   <script>
     const historyState = { hours: 24, range: '24h' };
+    const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
+    const runnersState = { loaded: false };
     let githubBaseURL = 'https://github.com';
     const pageNames = {
-      dashboard: 'Runner Groups',
+      dashboard: 'History',
       active: 'Active Jobs',
       queued: 'Queued Jobs',
-      history: 'History',
+      'historic-runs': 'Historic Runs',
+      runners: 'Runner Groups',
     };
+    const pageAliases = { history: 'dashboard' };
 
     async function fetchJSON(path, options) {
       const res = await fetch(path, options);
       if (!res.ok) throw new Error(`${path} returned ${res.status}`);
       return res.json();
+    }
+
+    function normalizePage(page) {
+      page = pageAliases[page] || page;
+      return pageNames[page] ? page : 'dashboard';
+    }
+
+    function escapeHTML(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      }[ch]));
     }
 
     function card(label, value) {
@@ -309,17 +362,23 @@
     }
 
     function showPage(page) {
-      if (!pageNames[page]) page = 'dashboard';
+      page = normalizePage(page);
       document.querySelectorAll('.page').forEach((el) => el.classList.remove('active'));
       document.getElementById(`page-${page}`)?.classList.add('active');
       document.getElementById('page-title').textContent = pageNames[page] || 'Dashboard';
       document.querySelectorAll('.nav-item').forEach((item) => {
         item.classList.toggle('selected', item.dataset.page === page);
       });
+      if (page === 'historic-runs' && !historicRunsState.loaded) {
+        loadHistoricRuns();
+      }
+      if (page === 'runners' && !runnersState.loaded) {
+        loadRunners();
+      }
     }
 
     function navigateToPage(page) {
-      if (!pageNames[page]) page = 'dashboard';
+      page = normalizePage(page);
       if (window.location.hash !== `#${page}`) {
         window.history.pushState({}, '', `#${page}`);
       }
@@ -343,23 +402,126 @@
       }
       for (const r of runs) {
         const tr = document.createElement('tr');
-        const runURL = `${githubBaseURL}/${r.Repo}/actions/runs/${r.RunID}`;
-        tr.innerHTML = `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${r.Repo}</a></td>` +
-          `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${r.Name}</a></td>` +
-          `<td>${r.HeadBranch}</td>` +
-          `<td class="status-${r.Status}">${r.Status}</td>` +
+        const repo = escapeHTML(r.Repo);
+        const name = escapeHTML(r.Name);
+        const branch = escapeHTML(r.HeadBranch);
+        const status = escapeHTML(r.Status);
+        const runURL = `${githubBaseURL}/${encodeURI(r.Repo)}/actions/runs/${encodeURIComponent(r.RunID)}`;
+        tr.innerHTML = `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${repo}</a></td>` +
+          `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${name}</a></td>` +
+          `<td>${branch}</td>` +
+          `<td class="status-${status}">${status}</td>` +
           `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>` +
-          `<td><button class="cancel-btn" data-repo="${r.Repo}" data-run-id="${r.RunID}">Cancel</button>` +
-          ` <button class="force-cancel-btn" data-repo="${r.Repo}" data-run-id="${r.RunID}">Force cancel</button></td>`;
+          `<td><button class="cancel-btn" data-repo="${repo}" data-run-id="${escapeHTML(r.RunID)}">Cancel</button>` +
+          ` <button class="force-cancel-btn" data-repo="${repo}" data-run-id="${escapeHTML(r.RunID)}">Force cancel</button></td>`;
         body.append(tr);
       }
     }
 
+    function renderHistoricRuns(runs, total) {
+      const body = document.querySelector('#historic-runs-table tbody');
+      body.innerHTML = '';
+      if (!runs || runs.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="8">No historic workflow runs in the database.</td>';
+        body.append(tr);
+      } else {
+        for (const r of runs) {
+          const tr = document.createElement('tr');
+          const repo = escapeHTML(r.Repo);
+          const name = escapeHTML(r.Name);
+          const branch = escapeHTML(r.HeadBranch);
+          const status = escapeHTML(r.Status);
+          const conclusion = escapeHTML(r.Conclusion);
+          const event = escapeHTML(r.Event);
+          const source = escapeHTML(r.Source);
+          const runURL = `${githubBaseURL}/${encodeURI(r.Repo)}/actions/runs/${encodeURIComponent(r.RunID)}`;
+          tr.innerHTML = `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${repo}</a></td>` +
+            `<td><a href="${runURL}" target="_blank" rel="noopener noreferrer">${name}</a></td>` +
+            `<td>${branch}</td>` +
+            `<td class="status-${status}">${status}</td>` +
+            `<td class="status-${conclusion}">${conclusion || '-'}</td>` +
+            `<td>${event || '-'}</td>` +
+            `<td>${source || '-'}</td>` +
+            `<td>${r.UpdatedAt ? new Date(r.UpdatedAt).toLocaleString() : ''}</td>`;
+          body.append(tr);
+        }
+      }
+      const totalPages = Math.max(1, Math.ceil(total / historicRunsState.limit));
+      document.getElementById('historic-page-label').textContent =
+        `Page ${historicRunsState.page} of ${totalPages} - ${total} stored runs`;
+      document.getElementById('historic-prev-btn').disabled = historicRunsState.page <= 1;
+      document.getElementById('historic-next-btn').disabled = historicRunsState.page >= totalPages;
+      document.querySelectorAll('#historic-runs-table th.sortable').forEach((th) => {
+        const arrow = th.querySelector('.arrow');
+        arrow.textContent = th.dataset.sort === historicRunsState.sort ? (historicRunsState.order === 'asc' ? '▲' : '▼') : '';
+      });
+    }
+
+    async function loadHistoricRuns() {
+      const status = document.getElementById('historic-runs-status');
+      status.textContent = 'Loading stored workflow runs...';
+      try {
+        const params = new URLSearchParams({
+          limit: String(historicRunsState.limit),
+          page: String(historicRunsState.page),
+          sort: historicRunsState.sort,
+          order: historicRunsState.order,
+        });
+        const data = await fetchJSON(`/api/runs/recent?${params}`);
+        historicRunsState.total = data.total || 0;
+        historicRunsState.loaded = true;
+        renderHistoricRuns(data.runs || [], historicRunsState.total);
+        status.textContent = `Database snapshot loaded at ${new Date().toLocaleTimeString()}. No GitHub polling was triggered.`;
+      } catch (err) {
+        status.textContent = `Failed to load stored workflow runs: ${err.message}`;
+      }
+    }
+
+    function renderRunners(runnerGroups) {
+      const runnersBody = document.querySelector('#runners-table tbody');
+      runnersBody.innerHTML = '';
+      if (!runnerGroups || runnerGroups.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="4">No runner group snapshots in the database.</td>';
+        runnersBody.append(tr);
+        return;
+      }
+      for (const g of runnerGroups) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${escapeHTML(g.GroupName)}</td><td>${g.Total}</td><td>${g.Busy}</td><td>${g.Idle}</td>`;
+        runnersBody.append(tr);
+      }
+    }
+
+    async function loadRunners() {
+      const status = document.getElementById('runners-status');
+      status.textContent = 'Loading stored runner snapshots...';
+      try {
+        const runners = await fetchJSON('/api/runners');
+        runnersState.loaded = true;
+        renderRunners(runners.runner_groups || []);
+        status.textContent = `Database snapshot loaded at ${new Date().toLocaleTimeString()}. No GitHub polling was triggered.`;
+      } catch (err) {
+        status.textContent = `Failed to load stored runner snapshots: ${err.message}`;
+      }
+    }
+
+    async function cancelRun(repo, runID, force) {
+      const action = force ? 'force cancel' : 'cancel';
+      if (!window.confirm(`Are you sure you want to ${action} ${repo} run ${runID}?`)) return;
+      await fetchJSON(`/api/runs/${runID}/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo, force }),
+      });
+      await refresh();
+    }
+
     async function refresh() {
       try {
-        const [status, runners, activeRuns, queuedRuns, queueHistory] = await Promise.all([
+        const [status, activeRuns, queuedRuns, queueHistory] = await Promise.all([
           fetchJSON('/api/status'),
-          fetchJSON('/api/runners'),
           fetchJSON('/api/runs/recent?limit=100&status=in_progress'),
           fetchJSON('/api/runs/recent?limit=100&status=queued'),
           fetchJSON(`/api/queue-depth/history?hours=${historyState.hours}`),
@@ -370,6 +532,13 @@
         updateRangeButtons();
 
         document.getElementById('error').style.display = 'none';
+        const rateLimit = status.rate_limit;
+        if (rateLimit && rateLimit.remaining === 0 && rateLimit.limit > 0 && rateLimit.reset_at && !rateLimit.reset_at.startsWith('0001-')) {
+          const reset = rateLimit.reset_at ? new Date(rateLimit.reset_at).toLocaleTimeString() : 'the reset time';
+          const el = document.getElementById('error');
+          el.textContent = `GitHub API rate limit exhausted. Polling may be stale until ${reset}.`;
+          el.style.display = 'block';
+        }
         const generatedAt = status.generated_at ? new Date(status.generated_at) : new Date();
         githubBaseURL = (status.github_base_url || 'https://github.com').replace(/\/+$/, '');
         document.getElementById('org-line').textContent =
@@ -401,38 +570,6 @@
             `<td>${total}</td>` +
             `<td class="status-operational">operational</td>`;
           scanBody.append(tr);
-        }
-
-        async function cancelRun(repo, runID, force) {
-          const action = force ? 'force cancel' : 'cancel';
-          if (!window.confirm(`Are you sure you want to ${action} ${repo} run ${runID}?`)) return;
-          await fetchJSON(`/api/runs/${runID}/cancel`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo, force }),
-          });
-          await refresh();
-        }
-
-        document.addEventListener('click', (event) => {
-          const button = event.target.closest('.cancel-btn, .force-cancel-btn');
-          if (!button) return;
-          const force = button.classList.contains('force-cancel-btn');
-          button.disabled = true;
-          cancelRun(button.dataset.repo, button.dataset.runId, force).catch((err) => {
-            const el = document.getElementById('error');
-            el.textContent = `Failed to ${force ? 'force cancel' : 'cancel'} workflow run: ${err.message}`;
-            el.style.display = 'block';
-            button.disabled = false;
-          });
-        });
-
-        const runnersBody = document.querySelector('#runners-table tbody');
-        runnersBody.innerHTML = '';
-        for (const g of runners.runner_groups || []) {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${g.GroupName}</td><td>${g.Total}</td><td>${g.Busy}</td><td>${g.Idle}</td>`;
-          runnersBody.append(tr);
         }
 
         renderJobs('active-runs-table', activeRuns.runs || [], 'No active workflow runs right now.');
@@ -479,8 +616,52 @@
     document.getElementById('now-btn').addEventListener('click', () => {
       setHistoryRange(24, '24h');
     });
+    document.getElementById('runners-load-btn').addEventListener('click', () => {
+      runnersState.loaded = false;
+      loadRunners();
+    });
+    document.getElementById('historic-runs-load-btn').addEventListener('click', () => {
+      historicRunsState.loaded = false;
+      loadHistoricRuns();
+    });
+    document.getElementById('historic-prev-btn').addEventListener('click', () => {
+      if (historicRunsState.page <= 1) return;
+      historicRunsState.page--;
+      loadHistoricRuns();
+    });
+    document.getElementById('historic-next-btn').addEventListener('click', () => {
+      const totalPages = Math.max(1, Math.ceil(historicRunsState.total / historicRunsState.limit));
+      if (historicRunsState.page >= totalPages) return;
+      historicRunsState.page++;
+      loadHistoricRuns();
+    });
+    document.querySelectorAll('#historic-runs-table th.sortable').forEach((th) => {
+      th.addEventListener('click', () => {
+        const sort = th.dataset.sort;
+        if (historicRunsState.sort === sort) {
+          historicRunsState.order = historicRunsState.order === 'asc' ? 'desc' : 'asc';
+        } else {
+          historicRunsState.sort = sort;
+          historicRunsState.order = 'asc';
+        }
+        historicRunsState.page = 1;
+        loadHistoricRuns();
+      });
+    });
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('.cancel-btn, .force-cancel-btn');
+      if (!button) return;
+      const force = button.classList.contains('force-cancel-btn');
+      button.disabled = true;
+      cancelRun(button.dataset.repo, button.dataset.runId, force).catch((err) => {
+        const el = document.getElementById('error');
+        el.textContent = `Failed to ${force ? 'force cancel' : 'cancel'} workflow run: ${err.message}`;
+        el.style.display = 'block';
+        button.disabled = false;
+      });
+    });
     function loadPageFromURL() {
-      showPage(window.location.hash.slice(1) || 'history');
+      showPage(window.location.hash.slice(1) || 'dashboard');
     }
     window.addEventListener('popstate', loadPageFromURL);
     window.addEventListener('hashchange', loadPageFromURL);
