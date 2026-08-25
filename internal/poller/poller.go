@@ -49,6 +49,16 @@ type Poller struct {
 	Now func() time.Time
 }
 
+// RefreshNow runs one immediate pass of every poll sweep (active workflow
+// runs, recent/historic workflow runs, and runner capacity), bypassing the
+// configured intervals. Used to back a manual "force refresh" action so
+// staleness isn't limited by the poll ticker cadence.
+func (p *Poller) RefreshNow(ctx context.Context) {
+	p.pollWorkflowRuns(ctx)
+	p.pollHistory(ctx)
+	p.pollRunners(ctx)
+}
+
 // Run blocks, polling workflow runs and runner capacity on their configured
 // intervals until ctx is cancelled.
 func (p *Poller) Run(ctx context.Context) {

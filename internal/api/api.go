@@ -22,10 +22,18 @@ type Store interface {
 	LatestRunnerSnapshots(ctx context.Context) ([]store.RunnerSnapshot, error)
 }
 
+// Refresher lets the API trigger an immediate, out-of-band poll sweep (used
+// by the dashboard's "force refresh" button). Optional: if unset,
+// /api/refresh returns 503 rather than panicking.
+type Refresher interface {
+	RefreshNow(ctx context.Context)
+}
+
 // Server wires up the monitor's HTTP handlers.
 type Server struct {
-	Store Store
-	Org   string
+	Store     Store
+	Org       string
+	Refresher Refresher
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -48,6 +56,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/runs/recent", s.handleRecentRuns)
 	mux.HandleFunc("GET /api/runners", s.handleRunners)
+	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	return mux
 }
 
@@ -118,6 +127,19 @@ func (s *Server) handleRunners(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runner_groups": snaps})
+}
+
+// handleRefresh triggers an immediate, synchronous poll sweep (active runs,
+// history, runners) so the dashboard doesn't have to wait for the next
+// scheduled tick. Requires a Refresher to be configured; otherwise responds
+// 503 since there's nothing to poll (e.g. no GitHub client configured).
+func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.Refresher == nil {
+		writeError(w, http.StatusServiceUnavailable, "refresh is not available: no poller configured")
+		return
+	}
+	s.Refresher.RefreshNow(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{"refreshed": true, "at": s.now()})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

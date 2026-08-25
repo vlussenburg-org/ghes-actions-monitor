@@ -219,3 +219,42 @@ func TestHandleRunners_StoreError(t *testing.T) {
 		t.Errorf("expected 500, got %d", rec.Code)
 	}
 }
+
+type fakeRefresher struct {
+	calls int
+}
+
+func (f *fakeRefresher) RefreshNow(ctx context.Context) {
+	f.calls++
+}
+
+func TestHandleRefresh_NoRefresherConfigured(t *testing.T) {
+	s := &Server{Store: &fakeStore{}}
+	req := httptest.NewRequest(http.MethodPost, "/api/refresh", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when no refresher configured, got %d", rec.Code)
+	}
+}
+
+func TestHandleRefresh_TriggersRefresh(t *testing.T) {
+	fr := &fakeRefresher{}
+	s := &Server{Store: &fakeStore{}, Refresher: fr}
+	req := httptest.NewRequest(http.MethodPost, "/api/refresh", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if fr.calls != 1 {
+		t.Errorf("expected RefreshNow to be called once, got %d", fr.calls)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if refreshed, _ := body["refreshed"].(bool); !refreshed {
+		t.Errorf("expected refreshed=true in response, got %+v", body)
+	}
+}

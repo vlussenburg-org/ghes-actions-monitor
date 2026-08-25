@@ -25,6 +25,7 @@
 <body>
   <h1>GitHub Actions Monitor</h1>
   <p class="subtitle" id="org-line">Loading…</p>
+  <p><button id="refresh-btn">Force refresh</button></p>
   <p id="error"></p>
 
   <section class="grid" id="summary-cards"></section>
@@ -108,6 +109,25 @@
 
     refresh();
     setInterval(refresh, 10000);
+
+    document.getElementById('refresh-btn').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Refreshing…';
+      try {
+        const res = await fetch('/api/refresh', { method: 'POST' });
+        if (!res.ok) throw new Error(`refresh returned ${res.status}`);
+        await refresh();
+      } catch (err) {
+        const el = document.getElementById('error');
+        el.textContent = `Failed to force refresh: ${err.message}`;
+        el.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
   </script>
 </body>
 </html>

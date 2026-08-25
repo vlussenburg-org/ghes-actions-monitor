@@ -373,6 +373,34 @@ func TestPollHistory_StoreErrorContinues(t *testing.T) {
 	p.pollHistory(context.Background()) // should not panic
 }
 
+func TestRefreshNow_RunsAllSweeps(t *testing.T) {
+	client := &fakeGitHubClient{
+		repos: []string{"widgets"},
+		activeRuns: map[string][]*github.WorkflowRun{
+			"widgets": {{ID: github.Int64(1), Status: strPtr("in_progress")}},
+		},
+		recentRuns: map[string][]*github.WorkflowRun{
+			"widgets": {{ID: github.Int64(2), Status: strPtr("completed"), Conclusion: strPtr("success")}},
+		},
+		runnerGroups: []*github.RunnerGroup{{ID: github.Int64(1), Name: strPtr("default")}},
+		groupRunners: map[int64][]*github.Runner{1: {{Busy: github.Bool(true)}}},
+	}
+	st := &fakeStore{}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.RefreshNow(context.Background())
+
+	if client.listRunsCalls == 0 || client.listRecentCalls == 0 || client.listGroupsCalls == 0 {
+		t.Fatalf("expected RefreshNow to invoke all three sweeps, got %+v", client)
+	}
+	if len(st.runs) != 2 {
+		t.Errorf("expected 2 runs stored (active + historic), got %d", len(st.runs))
+	}
+	if len(st.runSnapshots) != 1 {
+		t.Errorf("expected 1 runner snapshot stored, got %d", len(st.runSnapshots))
+	}
+}
+
 func TestToStoreRun_UsesRunUpdatedAtWhenPresent(t *testing.T) {
 	updated := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
 	run := &github.WorkflowRun{

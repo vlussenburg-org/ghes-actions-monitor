@@ -63,8 +63,9 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var p *poller.Poller
 	if pollClient != nil {
-		p := &poller.Poller{
+		p = &poller.Poller{
 			Client:           &poller.GHClientAdapter{Client: pollClient},
 			Store:            st,
 			Org:              cfg.Org,
@@ -79,6 +80,9 @@ func run(logger *slog.Logger) error {
 	}
 
 	apiServer := &api.Server{Store: st, Org: cfg.Org}
+	if p != nil {
+		apiServer.Refresher = p
+	}
 	mux := apiServer.Routes()
 	mux.Handle("/", http.FileServer(http.Dir("web/static")))
 
