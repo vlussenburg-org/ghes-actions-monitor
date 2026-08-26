@@ -8,6 +8,26 @@ Built for **GHES** (GitHub Enterprise Server) first, and works against
 **GitHub.com / GHEC** with configuration only — see [GHEC_TODO.md](GHEC_TODO.md)
 for instance-targeting details and known gaps.
 
+> [!WARNING]
+> This is an independent open-source project, not an official GitHub product,
+> and is not affiliated with, endorsed by, or supported by GitHub. "GitHub",
+> "GitHub Actions", and "GitHub Enterprise Server" are trademarks of GitHub,
+> Inc. Use of this project does not grant any license to GitHub trademarks.
+
+## Disclaimer
+
+This software is provided under the [MIT License](LICENSE), without warranty
+or guarantee of availability, accuracy, security, or fitness for a particular
+purpose. It is intended as an operational aid, not as a replacement for
+GitHub's own controls, monitoring, audit logs, backups, or incident-response
+processes. Validate it in a non-production environment before deployment and
+review all permissions and network exposure for your environment.
+
+The monitor can persist workflow data and expose controls that cancel workflow
+runs. Keep its database, logs, configuration, credentials, and webhook secrets
+protected. See [SECURITY.md](SECURITY.md) for deployment guidance and
+vulnerability reporting.
+
 ## Current scope (MVP)
 
 - Live workflow run feed via an inbound org webhook (`workflow_run` events).
@@ -115,6 +135,13 @@ go run ./cmd/server
 ```
 
 Then open http://localhost:8080.
+
+## License
+
+Released under the [MIT License](LICENSE). Third-party dependencies and
+vendored assets remain under their respective licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the vendored Chart.js
+notice.
 
 ## Running with Docker
 
