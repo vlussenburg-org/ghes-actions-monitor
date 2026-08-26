@@ -347,7 +347,7 @@
     const historyState = { hours: 24, range: '24h' };
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
-    const zombiesState = { loaded: false, minutes: 1440, runs: [] };
+    const zombiesState = { loaded: false, minutes: Number(document.getElementById('zombies-minutes-select').value), runs: [] };
     let githubBaseURL = 'https://github.com';
     let orgName = '';
     const pageNames = {
