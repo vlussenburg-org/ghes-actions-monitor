@@ -844,24 +844,14 @@ ${rows.join('\n')}
     document.getElementById('now-btn').addEventListener('click', () => {
       setHistoryRange(24, '24h');
     });
-    document.getElementById('active-refresh-btn').addEventListener('click', () => {
-      refresh();
-    });
-    document.getElementById('queued-refresh-btn').addEventListener('click', () => {
-      refresh();
-    });
-    document.getElementById('runners-load-btn').addEventListener('click', () => {
-      runnersState.loaded = false;
-      loadRunners();
-    });
-    document.getElementById('historic-runs-load-btn').addEventListener('click', () => {
-      historicRunsState.loaded = false;
-      loadHistoricRuns();
-    });
-    document.getElementById('zombies-load-btn').addEventListener('click', () => {
-      zombiesState.loaded = false;
-      loadZombies();
-    });
+    function wireRefresh(id, fn) {
+      document.getElementById(id).addEventListener('click', fn);
+    }
+    wireRefresh('active-refresh-btn', () => refresh());
+    wireRefresh('queued-refresh-btn', () => refresh());
+    wireRefresh('runners-load-btn', () => { runnersState.loaded = false; loadRunners(); });
+    wireRefresh('historic-runs-load-btn', () => { historicRunsState.loaded = false; loadHistoricRuns(); });
+    wireRefresh('zombies-load-btn', () => { zombiesState.loaded = false; loadZombies(); });
     document.getElementById('zombies-minutes-select').addEventListener('change', (e) => {
       zombiesState.minutes = Number(e.target.value);
       zombiesState.loaded = false;
