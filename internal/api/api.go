@@ -22,6 +22,7 @@ type Store interface {
 	InFlightCount(ctx context.Context) (int, error)
 	RecentRuns(ctx context.Context, opts store.RecentRunsOptions) ([]store.WorkflowRun, int, error)
 	RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error)
+	CompletedRunOutcomes(ctx context.Context, since time.Time) ([]store.CompletedRunOutcome, error)
 	LatestRunnerSnapshots(ctx context.Context) ([]store.RunnerSnapshot, error)
 	ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]store.WorkflowRun, error)
 }
@@ -74,6 +75,7 @@ func (s *Server) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/runs/recent", s.handleRecentRuns)
 	mux.HandleFunc("GET /api/runners", s.handleRunners)
 	mux.HandleFunc("GET /api/queue-depth/history", s.handleQueueDepthHistory)
+	mux.HandleFunc("GET /api/runs/outcomes/history", s.handleRunOutcomesHistory)
 	mux.HandleFunc("GET /api/runs/zombies", s.handleZombieRuns)
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /api/runs/{run_id}/cancel", s.handleCancelRun)
@@ -253,6 +255,31 @@ func (s *Server) handleQueueDepthHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"history": history})
+}
+
+// handleRunOutcomesHistory returns each completed workflow run's terminal
+// conclusion and completion time within the requested window — GET
+// /api/runs/outcomes/history?hours=N (default 24, capped at 168 = 7 days) —
+// so the dashboard can bucket them into a failure-rate trend line matching
+// the selected range.
+func (s *Server) handleRunOutcomesHistory(w http.ResponseWriter, r *http.Request) {
+	hours := 24
+	if v := r.URL.Query().Get("hours"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			hours = n
+		}
+	}
+	if hours > 168 {
+		hours = 168
+	}
+
+	since := s.now().Add(-time.Duration(hours) * time.Hour)
+	outcomes, err := s.Store.CompletedRunOutcomes(r.Context(), since)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to fetch run outcomes history")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"outcomes": outcomes})
 }
 
 // handleZombieRuns returns workflow runs that are still queued/in_progress

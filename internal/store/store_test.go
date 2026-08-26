@@ -255,6 +255,60 @@ func TestRecentOutcomes_DedupesRepeatedPollsOfSameRun(t *testing.T) {
 	}
 }
 
+func TestCompletedRunOutcomes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	since := now.Add(-time.Hour)
+
+	runs := []WorkflowRun{
+		{RunID: 1, Repo: "org/a", Status: "completed", Conclusion: "success", UpdatedAt: now.Add(-30 * time.Minute)},
+		{RunID: 2, Repo: "org/a", Status: "completed", Conclusion: "failure", UpdatedAt: now},
+		{RunID: 3, Repo: "org/a", Status: "queued", UpdatedAt: now},                                               // not completed, excluded
+		{RunID: 4, Repo: "org/a", Status: "completed", Conclusion: "success", UpdatedAt: now.Add(-2 * time.Hour)}, // too old
+	}
+	for _, r := range runs {
+		if err := s.UpsertWorkflowRun(ctx, r); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	out, err := s.CompletedRunOutcomes(ctx, since)
+	if err != nil {
+		t.Fatalf("CompletedRunOutcomes: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 outcomes, got %d: %+v", len(out), out)
+	}
+	if out[0].Conclusion != "success" || out[1].Conclusion != "failure" {
+		t.Errorf("expected [success, failure] ordered oldest to newest, got %+v", out)
+	}
+}
+
+func TestCompletedRunOutcomes_DedupesRepeatedPollsOfSameRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	since := now.Add(-time.Hour)
+
+	for i := 0; i < 3; i++ {
+		if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+			RunID: 1, Repo: "org/a", Status: "completed", Conclusion: "failure",
+			UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	out, err := s.CompletedRunOutcomes(ctx, since)
+	if err != nil {
+		t.Fatalf("CompletedRunOutcomes: %v", err)
+	}
+	if len(out) != 1 {
+		t.Errorf("expected exactly 1 outcome despite 3 repeated polls of the same run, got %d", len(out))
+	}
+}
+
 func TestRecentRuns(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

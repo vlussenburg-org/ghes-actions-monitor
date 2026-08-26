@@ -205,7 +205,7 @@
       </div>
       <nav class="nav">
         <h3>Overview</h3>
-        <button class="nav-item selected" data-page="dashboard"><span class="nav-icon" aria-hidden="true">📈</span>History</button>
+        <button class="nav-item selected" data-page="dashboard"><span class="nav-icon" aria-hidden="true">📈</span>Dashboard</button>
         <h3>Jobs</h3>
         <button class="nav-item" data-page="active"><span class="nav-icon" aria-hidden="true">⚡</span>Active Jobs <span class="badge active" id="nav-active">0</span></button>
         <button class="nav-item" data-page="queued"><span class="nav-icon" aria-hidden="true">⏳</span>Queued Jobs <span class="badge queued" id="nav-queued">0</span></button>
@@ -224,11 +224,11 @@
     </aside>
 
     <main class="main">
-      <h1 id="page-title">History</h1>
+      <h1 id="page-title">Dashboard</h1>
       <p class="subtitle" id="org-line">Actions queue depth and workflow history. Loading...</p>
       <p id="error"></p>
 
-      <section class="page active" id="page-dashboard" data-title="History">
+      <section class="page active" id="page-dashboard" data-title="Dashboard">
         <div class="grid" id="summary-cards"></div>
         <div class="toolbar" id="range-toolbar">
           <button data-hours="1" data-range="1h">1h</button>
@@ -245,6 +245,13 @@
             <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
           </div>
           <canvas id="queue-chart" width="1100" height="320"></canvas>
+        </div>
+        <h2>🚦 Failure rate</h2>
+        <div class="chart-shell">
+          <div class="chart-legend">
+            <span style="color: #f85149"><span class="swatch"></span>Failure rate %</span>
+          </div>
+          <canvas id="failure-rate-chart" width="1100" height="220"></canvas>
         </div>
         <h2>📈 Scan history</h2>
         <table id="scan-table">
@@ -351,7 +358,7 @@
     let githubBaseURL = 'https://github.com';
     let orgName = '';
     const pageNames = {
-      dashboard: 'History',
+      dashboard: 'Dashboard',
       active: 'Active Jobs',
       queued: 'Queued Jobs',
       'historic-runs': 'Historic Runs',
@@ -447,6 +454,88 @@
       }
       drawLine('InProgress', '#3fb950');
       drawLine('Queued', '#e3b341');
+    }
+
+    // Buckets completed-run outcomes into a fixed number of time windows and
+    // returns the failure rate (%) per bucket, so a long history range still
+    // renders a smooth trend line instead of a noisy per-run scatter.
+    function bucketFailureRate(outcomes, bucketCount) {
+      if (!outcomes || outcomes.length === 0) return [];
+      const times = outcomes.map((o) => new Date(o.CompletedAt).getTime());
+      const minT = Math.min(...times), maxT = Math.max(...times);
+      const span = Math.max(1, maxT - minT);
+      const buckets = Array.from({ length: bucketCount }, () => ({ success: 0, failure: 0, other: 0 }));
+      for (const o of outcomes) {
+        const t = new Date(o.CompletedAt).getTime();
+        let idx = Math.floor(((t - minT) / span) * bucketCount);
+        if (idx >= bucketCount) idx = bucketCount - 1;
+        if (idx < 0) idx = 0;
+        const bucket = buckets[idx];
+        if (o.Conclusion === 'success') bucket.success++;
+        else if (o.Conclusion === 'failure') bucket.failure++;
+        else bucket.other++;
+      }
+      return buckets.map((b, i) => {
+        const total = b.success + b.failure + b.other;
+        const t = minT + (span / bucketCount) * (i + 0.5);
+        return { t, total, rate: total > 0 ? (b.failure / total) * 100 : null };
+      });
+    }
+
+    function drawFailureRateChart(outcomes) {
+      const canvas = document.getElementById('failure-rate-chart');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const buckets = bucketFailureRate(outcomes, 24).filter((b) => b.total > 0);
+      if (buckets.length === 0) {
+        ctx.fillStyle = '#9ca3af';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('No completed runs in this window yet', 24, h / 2);
+        return;
+      }
+
+      const padding = { top: 18, right: 18, bottom: 34, left: 44 };
+      const plotW = w - padding.left - padding.right;
+      const plotH = h - padding.top - padding.bottom;
+      const times = buckets.map((b) => b.t);
+      const minT = Math.min(...times), maxT = Math.max(...times);
+      const x = (t) => padding.left + (maxT === minT ? plotW : ((t - minT) / (maxT - minT)) * plotW);
+      const y = (v) => padding.top + plotH - (v / 100) * plotH;
+
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
+      ctx.lineWidth = 1;
+      ctx.fillStyle = '#9ca3af';
+      ctx.font = '12px sans-serif';
+      for (let i = 0; i <= 4; i++) {
+        const value = 25 * i;
+        const py = y(value);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, py);
+        ctx.lineTo(padding.left + plotW, py);
+        ctx.stroke();
+        ctx.fillText(`${value}%`, 8, py + 4);
+      }
+      for (let i = 0; i <= 6; i++) {
+        const t = minT + ((maxT - minT) / 6) * i;
+        const px = padding.left + (plotW / 6) * i;
+        ctx.beginPath();
+        ctx.moveTo(px, padding.top);
+        ctx.lineTo(px, padding.top + plotH);
+        ctx.stroke();
+        ctx.fillText(new Date(t).toLocaleTimeString([], { hour: 'numeric' }), px - 10, h - 10);
+      }
+
+      ctx.strokeStyle = '#f85149';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      buckets.forEach((b, i) => {
+        const px = x(b.t);
+        const py = y(b.rate);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      });
+      ctx.stroke();
     }
 
     function updateRangeButtons() {
@@ -729,15 +818,17 @@ ${rows.join('\n')}
 
     async function refresh() {
       try {
-        const [status, activeRuns, queuedRuns, queueHistory] = await Promise.all([
+        const [status, activeRuns, queuedRuns, queueHistory, outcomesHistory] = await Promise.all([
           fetchJSON('/api/status'),
           fetchJSON('/api/runs/recent?limit=100&status=in_progress'),
           fetchJSON('/api/runs/recent?limit=100&status=queued'),
           fetchJSON(`/api/queue-depth/history?hours=${historyState.hours}`),
+          fetchJSON(`/api/runs/outcomes/history?hours=${historyState.hours}`),
         ]);
 
         const history = queueHistory.history || [];
         drawQueueChart(history);
+        drawFailureRateChart(outcomesHistory.outcomes || []);
         updateRangeButtons();
 
         document.getElementById('error').style.display = 'none';
@@ -784,12 +875,17 @@ ${rows.join('\n')}
         document.getElementById('nav-queued').textContent = queuedCount;
         const cards = document.getElementById('summary-cards');
         cards.innerHTML = '';
+        const successCount1h = status.recent_outcomes_1h?.success ?? 0;
+        const failureCount1h = status.recent_outcomes_1h?.failure ?? 0;
+        const completed1h = successCount1h + failureCount1h;
+        const failureRate1h = completed1h > 0 ? ((failureCount1h / completed1h) * 100).toFixed(1) : '—';
         cards.append(
           card('Jobs in flight', status.in_flight ?? 0),
           card('Queued', queuedCount),
           card('In progress', activeCount),
-          card('Success (1h)', status.recent_outcomes_1h?.success ?? 0),
-          card('Failure (1h)', status.recent_outcomes_1h?.failure ?? 0),
+          card('Success (1h)', successCount1h),
+          card('Failure (1h)', failureCount1h),
+          card('Failure rate (1h)', completed1h > 0 ? `${failureRate1h}%` : failureRate1h),
         );
 
         const scanBody = document.querySelector('#scan-table tbody');

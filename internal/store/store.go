@@ -310,6 +310,45 @@ func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string
 	return out, rows.Err()
 }
 
+// CompletedRunOutcome is a single completed workflow run's terminal
+// conclusion and completion time, used to build a failure-rate trend over
+// time (bucketed client-side to match the selected dashboard range).
+type CompletedRunOutcome struct {
+	Conclusion  string
+	CompletedAt time.Time
+}
+
+// CompletedRunOutcomes returns each distinct run's terminal conclusion and
+// completion time for runs completed since the given time, ordered oldest
+// to newest. Like RecentOutcomes, this dedupes by run_id (using each run's
+// most recently recorded state) so repeated polls of the same run aren't
+// double-counted.
+func (s *Store) CompletedRunOutcomes(ctx context.Context, since time.Time) ([]CompletedRunOutcome, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT conclusion, updated_at FROM (
+			SELECT run_id, conclusion, status, updated_at FROM workflow_runs w1
+			WHERE w1.id = (
+				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+			)
+		) latest
+		WHERE latest.status = 'completed' AND latest.conclusion <> '' AND latest.updated_at >= ?
+		ORDER BY latest.updated_at ASC`, since)
+	if err != nil {
+		return nil, fmt.Errorf("query completed run outcomes: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CompletedRunOutcome
+	for rows.Next() {
+		var o CompletedRunOutcome
+		if err := rows.Scan(&o.Conclusion, &o.CompletedAt); err != nil {
+			return nil, fmt.Errorf("scan completed run outcome: %w", err)
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // RecentRunsOptions controls pagination and sorting for RecentRuns.
 type RecentRunsOptions struct {
 	Limit  int    // max rows to return (defaults applied by caller)

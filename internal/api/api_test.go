@@ -14,24 +14,27 @@ import (
 )
 
 type fakeStore struct {
-	queueDepth     store.QueueDepth
-	queueDepthErr  error
-	queueHistory   []store.QueueDepthSnapshot
-	queueHistErr   error
-	inFlight       int
-	inFlightErr    error
-	outcomes       map[string]int
-	outcomesErr    error
-	recentRuns     []store.WorkflowRun
-	recentRunsErr  error
-	runnerSnaps    []store.RunnerSnapshot
-	runnerSnapsErr error
-	zombieRuns     []store.WorkflowRun
-	zombieRunsErr  error
+	queueDepth           store.QueueDepth
+	queueDepthErr        error
+	queueHistory         []store.QueueDepthSnapshot
+	queueHistErr         error
+	inFlight             int
+	inFlightErr          error
+	outcomes             map[string]int
+	outcomesErr          error
+	completedOutcomes    []store.CompletedRunOutcome
+	completedOutcomesErr error
+	recentRuns           []store.WorkflowRun
+	recentRunsErr        error
+	runnerSnaps          []store.RunnerSnapshot
+	runnerSnapsErr       error
+	zombieRuns           []store.WorkflowRun
+	zombieRunsErr        error
 
-	lastOpts         store.RecentRunsOptions
-	lastSince        time.Time
-	lastHistorySince time.Time
+	lastOpts                 store.RecentRunsOptions
+	lastSince                time.Time
+	lastHistorySince         time.Time
+	lastOutcomesHistorySince time.Time
 }
 
 type fakeRunController struct {
@@ -70,6 +73,11 @@ func (f *fakeStore) RecentRuns(ctx context.Context, opts store.RecentRunsOptions
 func (f *fakeStore) RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error) {
 	f.lastSince = since
 	return f.outcomes, f.outcomesErr
+}
+
+func (f *fakeStore) CompletedRunOutcomes(ctx context.Context, since time.Time) ([]store.CompletedRunOutcome, error) {
+	f.lastOutcomesHistorySince = since
+	return f.completedOutcomes, f.completedOutcomesErr
 }
 
 func (f *fakeStore) LatestRunnerSnapshots(ctx context.Context) ([]store.RunnerSnapshot, error) {
@@ -425,6 +433,71 @@ func TestHandleQueueDepthHistory_StoreError(t *testing.T) {
 	fs := &fakeStore{queueHistErr: errors.New("db down")}
 	s := &Server{Store: fs}
 	req := httptest.NewRequest(http.MethodGet, "/api/queue-depth/history", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestHandleRunOutcomesHistory_HappyPath(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	want := []store.CompletedRunOutcome{
+		{Conclusion: "success", CompletedAt: now.Add(-time.Hour)},
+		{Conclusion: "failure", CompletedAt: now},
+	}
+	fs := &fakeStore{completedOutcomes: want}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/outcomes/history?hours=6", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !fs.lastOutcomesHistorySince.Equal(now.Add(-6 * time.Hour)) {
+		t.Errorf("expected since=%v, got %v", now.Add(-6*time.Hour), fs.lastOutcomesHistorySince)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	outcomes, _ := body["outcomes"].([]any)
+	if len(outcomes) != 2 {
+		t.Fatalf("expected 2 outcome entries, got %d", len(outcomes))
+	}
+}
+
+func TestHandleRunOutcomesHistory_DefaultsTo24Hours(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	fs := &fakeStore{}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/outcomes/history", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if !fs.lastOutcomesHistorySince.Equal(now.Add(-24 * time.Hour)) {
+		t.Errorf("expected default since=%v, got %v", now.Add(-24*time.Hour), fs.lastOutcomesHistorySince)
+	}
+}
+
+func TestHandleRunOutcomesHistory_CapsAt168Hours(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	fs := &fakeStore{}
+	s := &Server{Store: fs, Now: func() time.Time { return now }}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/outcomes/history?hours=99999", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+
+	if !fs.lastOutcomesHistorySince.Equal(now.Add(-168 * time.Hour)) {
+		t.Errorf("expected capped since=%v, got %v", now.Add(-168*time.Hour), fs.lastOutcomesHistorySince)
+	}
+}
+
+func TestHandleRunOutcomesHistory_StoreError(t *testing.T) {
+	fs := &fakeStore{completedOutcomesErr: errors.New("db down")}
+	s := &Server{Store: fs}
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/outcomes/history", nil)
 	rec := httptest.NewRecorder()
 	s.Routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
