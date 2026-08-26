@@ -13,9 +13,15 @@ The runtime data flow has two complementary inputs:
 - `internal/webhook` handles `POST /webhook/github` workflow-run deliveries and
   is the primary near-real-time signal. When configured, it verifies
   `X-Hub-Signature-256` with HMAC-SHA256.
-- `internal/poller` periodically sweeps active workflow runs and runner-group
-  capacity through the GitHub REST API. Historic/recent workflow runs are
-  intentionally fetched only by the synchronous `/api/refresh` action.
+- `internal/poller` periodically spot-checks active workflow runs and
+  runner-group capacity through the GitHub REST API — but only for repos
+  webhooks have recorded as recently active (`RecentlyActiveRepos`), so the
+  scheduled sweep depends on webhook deliveries to know where to look. A
+  one-time full-org history bootstrap runs automatically if the store has
+  no recently-active repos at all. Historic/full-org workflow-run backfill
+  is otherwise only triggered by the synchronous `/api/refresh` action,
+  which is webhook-independent and can run the monitor without a webhook
+  configured at all (at the cost of needing manual/scheduled triggering).
 
 `internal/store` persists append-only workflow-run states plus queue-depth and
 runner-capacity snapshots in SQLite using the pure-Go `modernc.org/sqlite`
@@ -106,3 +112,6 @@ default `DB_PATH=/data/monitor.db`.
 - Add dashboard-facing data through typed store methods and JSON API handlers;
   keep the static UI in `web/static/index.html` unless a frontend build
   system is intentionally introduced.
+- Vendor third-party frontend JS under `web/static/vendor/` (served by the
+  same static file handler) instead of loading it from a CDN at runtime, so
+  the dashboard keeps working without outbound internet access.

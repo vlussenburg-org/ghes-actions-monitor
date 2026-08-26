@@ -11,8 +11,9 @@ for instance-targeting details and known gaps.
 ## Current scope (MVP)
 
 - Live workflow run feed via an inbound org webhook (`workflow_run` events).
-- Periodic API polling as a backstop: sweeps all org repos for active runs
-  and polls runner group capacity (busy/idle/total).
+- Periodic API polling as a backstop: spot-checks only the repos webhooks
+  reported as recently active for missed completions, and polls runner
+  group capacity (busy/idle/total).
 - A minimal dashboard and JSON API showing queue depth history, active/queued
   jobs, runner group snapshots, and stored workflow runs, with guarded
   cancellation controls for active runs.
@@ -26,15 +27,28 @@ version is a single admin PAT (no OAuth yet).
 
 1. **Webhook (push)** — configure an org webhook pointing at
    `POST /webhook/github` for the `workflow_run` event. This is the primary,
-   most reliable signal.
-2. **Poller (pull)** — on a schedule, calls the GitHub REST API to sweep for
-   active workflow runs (backstop for missed webhook deliveries) and to
-   snapshot runner group capacity. Historic run backfill is manual-only via
-   the dashboard's **Refresh** action.
-3. **Store** — everything is persisted to a local SQLite database
+   most reliable signal, and the background poller depends on it: the
+   scheduled active-run sweep only checks repos webhooks have recorded as
+   recently active, so it stays cheap but relies on webhook deliveries to
+   know where to look.
+2. **Poller (pull)** — on a schedule, spot-checks those recently-active repos
+   via the GitHub REST API to catch any completion webhook that was missed,
+   and polls runner group capacity. If the store has no recently-active
+   repos at all (fresh install, or webhooks never configured), it runs one
+   automatic one-time full-org history bootstrap so the spot-check has
+   something to work with. A full-org historic run backfill is otherwise
+   manual-only via the dashboard's **Refresh** action.
+3. **Refresh (manual, webhook-independent)** — the dashboard's **Refresh**
+   button (`POST /api/refresh`) synchronously runs the active-run sweep,
+   a full-org history sweep, and the runner-capacity poll, regardless of
+   webhook history. This means the monitor can be run entirely without a
+   webhook configured, as long as Refresh is triggered periodically (by a
+   person or a scheduled call) — the background poller's low-cost scheduled
+   sweep is what depends on webhooks, not the app as a whole.
+4. **Store** — everything is persisted to a local SQLite database
    (pure Go driver, no CGO) so history survives restarts/redeploys. Point
    `DB_PATH` at a mounted volume in production.
-4. **Dashboard/API** — a static HTML dashboard (`web/static/index.html`)
+5. **Dashboard/API** — a static HTML dashboard (`web/static/index.html`)
    polls the JSON API every 10s to show current status.
 
 ## Configuration
