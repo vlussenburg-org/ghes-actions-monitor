@@ -188,6 +188,7 @@
       .main { padding: 1rem; }
     }
   </style>
+  <script src="/vendor/chart.umd.js"></script>
 </head>
 <body>
   <div class="app">
@@ -240,18 +241,12 @@
           <button id="now-btn">Now</button>
         </div>
         <div class="chart-shell">
-          <div class="chart-legend">
-            <span style="color: var(--active)"><span class="swatch"></span>Active Jobs</span>
-            <span style="color: var(--queued)"><span class="swatch"></span>Queued Jobs</span>
-          </div>
           <canvas id="queue-chart" width="1100" height="320"></canvas>
         </div>
         <h2>🚦 Failure rate</h2>
         <div class="chart-shell">
-          <div class="chart-legend">
-            <span style="color: #f85149"><span class="swatch"></span>Failure rate %</span>
-          </div>
           <canvas id="failure-rate-chart" width="1100" height="220"></canvas>
+          <p id="failure-rate-empty" class="subtitle" style="display:none; text-align:center; padding: 3rem 0;">No completed runs in this window yet</p>
         </div>
         <h2>📈 Scan history</h2>
         <table id="scan-table">
@@ -395,65 +390,58 @@
       return div;
     }
 
+    const chartCommonOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          type: 'linear',
+          grid: { color: 'rgba(148, 163, 184, 0.18)' },
+          ticks: {
+            color: '#9ca3af',
+            callback: (v) => new Date(v).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+          },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#c9d1d9', usePointStyle: true } },
+        tooltip: {
+          backgroundColor: '#161b22',
+          borderColor: 'rgba(148, 163, 184, 0.3)',
+          borderWidth: 1,
+          callbacks: { title: (items) => new Date(items[0].parsed.x).toLocaleString() },
+        },
+      },
+    };
+
+    let queueChart = null;
     function drawQueueChart(history) {
       const canvas = document.getElementById('queue-chart');
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
+      const points = (history || []).map((p) => ({ t: new Date(p.CapturedAt).getTime(), queued: p.Queued, inProgress: p.InProgress }));
 
-      if (!history || history.length === 0) {
-        ctx.fillStyle = '#9ca3af';
-        ctx.font = '14px sans-serif';
-        ctx.fillText('No queue depth snapshots yet', 24, h / 2);
-        return;
-      }
-
-      const padding = { top: 18, right: 18, bottom: 34, left: 44 };
-      const plotW = w - padding.left - padding.right;
-      const plotH = h - padding.top - padding.bottom;
-      const times = history.map((p) => new Date(p.CapturedAt).getTime());
-      const minT = Math.min(...times), maxT = Math.max(...times);
-      const maxVal = Math.max(1, ...history.map((p) => Math.max(p.Queued, p.InProgress)));
-      const yMax = Math.ceil(maxVal / 5) * 5;
-      const x = (t) => padding.left + (maxT === minT ? plotW : ((t - minT) / (maxT - minT)) * plotW);
-      const y = (v) => padding.top + plotH - (v / yMax) * plotH;
-
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
-      ctx.lineWidth = 1;
-      ctx.fillStyle = '#9ca3af';
-      ctx.font = '12px sans-serif';
-      for (let i = 0; i <= 5; i++) {
-        const value = Math.round((yMax / 5) * i);
-        const py = y(value);
-        ctx.beginPath();
-        ctx.moveTo(padding.left, py);
-        ctx.lineTo(padding.left + plotW, py);
-        ctx.stroke();
-        ctx.fillText(String(value), 8, py + 4);
-      }
-      for (let i = 0; i <= 6; i++) {
-        const t = minT + ((maxT - minT) / 6) * i;
-        const px = padding.left + (plotW / 6) * i;
-        ctx.beginPath();
-        ctx.moveTo(px, padding.top);
-        ctx.lineTo(px, padding.top + plotH);
-        ctx.stroke();
-        ctx.fillText(new Date(t).toLocaleTimeString([], { hour: 'numeric' }), px - 10, h - 10);
-      }
-
-      function drawLine(key, color) {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        history.forEach((p, i) => {
-          const px = x(new Date(p.CapturedAt).getTime());
-          const py = y(p[key]);
-          if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      if (!queueChart) {
+        queueChart = new Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            datasets: [
+              { label: 'Active Jobs', borderColor: '#3fb950', backgroundColor: '#3fb950', data: [], parsing: false, pointRadius: 3, pointHoverRadius: 6, pointBorderColor: '#0d1117', pointBorderWidth: 1, borderWidth: 2, tension: 0.15 },
+              { label: 'Queued Jobs', borderColor: '#e3b341', backgroundColor: '#e3b341', data: [], parsing: false, pointRadius: 3, pointHoverRadius: 6, pointBorderColor: '#0d1117', pointBorderWidth: 1, borderWidth: 2, tension: 0.15 },
+            ],
+          },
+          options: {
+            ...chartCommonOptions,
+            scales: {
+              ...chartCommonOptions.scales,
+              y: { beginAtZero: true, grid: { color: 'rgba(148, 163, 184, 0.18)' }, ticks: { color: '#9ca3af', precision: 0 } },
+            },
+          },
         });
-        ctx.stroke();
       }
-      drawLine('InProgress', '#3fb950');
-      drawLine('Queued', '#e3b341');
+      queueChart.data.datasets[0].data = points.map((p) => ({ x: p.t, y: p.inProgress }));
+      queueChart.data.datasets[1].data = points.map((p) => ({ x: p.t, y: p.queued }));
+      queueChart.update();
     }
 
     // Buckets completed-run outcomes into a fixed number of time windows and
@@ -482,60 +470,44 @@
       });
     }
 
+    let failureRateChart = null;
     function drawFailureRateChart(outcomes) {
       const canvas = document.getElementById('failure-rate-chart');
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-
       const buckets = bucketFailureRate(outcomes, 24).filter((b) => b.total > 0);
-      if (buckets.length === 0) {
-        ctx.fillStyle = '#9ca3af';
-        ctx.font = '14px sans-serif';
-        ctx.fillText('No completed runs in this window yet', 24, h / 2);
-        return;
-      }
 
-      const padding = { top: 18, right: 18, bottom: 34, left: 44 };
-      const plotW = w - padding.left - padding.right;
-      const plotH = h - padding.top - padding.bottom;
-      const times = buckets.map((b) => b.t);
-      const minT = Math.min(...times), maxT = Math.max(...times);
-      const x = (t) => padding.left + (maxT === minT ? plotW : ((t - minT) / (maxT - minT)) * plotW);
-      const y = (v) => padding.top + plotH - (v / 100) * plotH;
-
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.18)';
-      ctx.lineWidth = 1;
-      ctx.fillStyle = '#9ca3af';
-      ctx.font = '12px sans-serif';
-      for (let i = 0; i <= 4; i++) {
-        const value = 25 * i;
-        const py = y(value);
-        ctx.beginPath();
-        ctx.moveTo(padding.left, py);
-        ctx.lineTo(padding.left + plotW, py);
-        ctx.stroke();
-        ctx.fillText(`${value}%`, 8, py + 4);
+      if (!failureRateChart) {
+        failureRateChart = new Chart(canvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            datasets: [
+              { label: 'Failure rate %', borderColor: '#f85149', backgroundColor: '#f85149', data: [], parsing: false, pointRadius: 3, pointHoverRadius: 6, pointBorderColor: '#0d1117', pointBorderWidth: 1, borderWidth: 2, tension: 0.15 },
+            ],
+          },
+          options: {
+            ...chartCommonOptions,
+            scales: {
+              ...chartCommonOptions.scales,
+              y: { min: 0, max: 100, grid: { color: 'rgba(148, 163, 184, 0.18)' }, ticks: { color: '#9ca3af', callback: (v) => `${v}%` } },
+            },
+            plugins: {
+              ...chartCommonOptions.plugins,
+              tooltip: {
+                ...chartCommonOptions.plugins.tooltip,
+                callbacks: {
+                  ...chartCommonOptions.plugins.tooltip.callbacks,
+                  label: (ctx) => `Failure rate: ${ctx.parsed.y.toFixed(1)}% (${ctx.raw.total} runs)`,
+                },
+              },
+            },
+          },
+        });
       }
-      for (let i = 0; i <= 6; i++) {
-        const t = minT + ((maxT - minT) / 6) * i;
-        const px = padding.left + (plotW / 6) * i;
-        ctx.beginPath();
-        ctx.moveTo(px, padding.top);
-        ctx.lineTo(px, padding.top + plotH);
-        ctx.stroke();
-        ctx.fillText(new Date(t).toLocaleTimeString([], { hour: 'numeric' }), px - 10, h - 10);
-      }
+      failureRateChart.data.datasets[0].data = buckets.map((b) => ({ x: b.t, y: b.rate, total: b.total }));
+      failureRateChart.update();
 
-      ctx.strokeStyle = '#f85149';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      buckets.forEach((b, i) => {
-        const px = x(b.t);
-        const py = y(b.rate);
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
+      const empty = document.getElementById('failure-rate-empty');
+      if (empty) empty.style.display = buckets.length === 0 ? 'block' : 'none';
+      canvas.style.display = buckets.length === 0 ? 'none' : 'block';
     }
 
     function updateRangeButtons() {
