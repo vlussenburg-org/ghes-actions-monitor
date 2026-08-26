@@ -33,7 +33,11 @@ WAL mode and one open connection to avoid writer-lock contention.
 `web/static/index.html`. The dashboard is plain HTML/CSS/JavaScript and
 polls the API every 10 seconds. API routes use Go `net/http` method/path
 patterns and include guarded refresh and workflow cancellation actions.
-Dashboard/API authentication is not implemented in this MVP; deployments
+Dashboard/API authentication is optional: `AUTH_USERNAME`/`AUTH_TOKEN`
+(both required together) enable a built-in HTTP Basic Auth check in
+`cmd/server`'s `basicAuth` middleware, wrapped around everything except the
+webhook receiver (which is authenticated separately via
+`GITHUB_WEBHOOK_SECRET`). If unset, there is no auth at all and deployments
 must put the service behind an authenticating proxy and restrict direct
 network access.
 

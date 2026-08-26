@@ -25,6 +25,53 @@ func TestLoad_MissingAuth(t *testing.T) {
 	}
 }
 
+func TestLoad_PartialAuthCredentialsRejected(t *testing.T) {
+	t.Setenv("GHES_BASE_URL", "https://ghes.example.com")
+	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
+	t.Setenv("AUTH_USERNAME", "admin")
+	t.Setenv("AUTH_TOKEN", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when only AUTH_USERNAME is set")
+	}
+
+	t.Setenv("AUTH_USERNAME", "")
+	t.Setenv("AUTH_TOKEN", "secret")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error when only AUTH_TOKEN is set")
+	}
+}
+
+func TestLoad_RequiresAuth(t *testing.T) {
+	t.Setenv("GHES_BASE_URL", "https://ghes.example.com")
+	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
+	t.Setenv("AUTH_USERNAME", "admin")
+	t.Setenv("AUTH_TOKEN", "secret")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.RequiresAuth() {
+		t.Error("expected RequiresAuth() to be true when both AUTH_USERNAME and AUTH_TOKEN are set")
+	}
+}
+
+func TestLoad_NoAuthByDefault(t *testing.T) {
+	t.Setenv("GHES_BASE_URL", "https://ghes.example.com")
+	t.Setenv("GITHUB_ORG", "snowflake-eng")
+	t.Setenv("GITHUB_ADMIN_TOKEN", "fake-pat")
+	t.Setenv("AUTH_USERNAME", "")
+	t.Setenv("AUTH_TOKEN", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RequiresAuth() {
+		t.Error("expected RequiresAuth() to be false when AUTH_USERNAME/AUTH_TOKEN are unset")
+	}
+}
+
 func TestLoad_GHECDefaultWhenBaseURLUnset(t *testing.T) {
 	t.Setenv("GHES_BASE_URL", "")
 	t.Setenv("GITHUB_ORG", "snowflake-eng")

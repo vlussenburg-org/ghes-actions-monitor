@@ -49,6 +49,15 @@ type Config struct {
 	// WebhookSecret validates inbound org webhook deliveries (HMAC SHA-256).
 	WebhookSecret string
 
+	// AuthUsername/AuthToken, when both set, require HTTP Basic Auth on the
+	// dashboard and JSON API (but not the GitHub webhook receiver, which is
+	// authenticated separately via WebhookSecret). Optional: the app has no
+	// auth of its own by default and must be placed behind an authenticating
+	// proxy in that case; setting these adds a lightweight built-in option
+	// for deployments without one.
+	AuthUsername string
+	AuthToken    string
+
 	// Poll intervals.
 	RunnerPollInterval   time.Duration
 	WorkflowPollInterval time.Duration
@@ -74,6 +83,8 @@ func Load() (Config, error) {
 		IsGHEC:        isGHECBaseURL(os.Getenv("GHES_BASE_URL")),
 		AdminToken:    os.Getenv("GITHUB_ADMIN_TOKEN"),
 		WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"),
+		AuthUsername:  os.Getenv("AUTH_USERNAME"),
+		AuthToken:     os.Getenv("AUTH_TOKEN"),
 		DBPath:        getEnvDefault("DB_PATH", "data/monitor.db"),
 	}
 
@@ -118,7 +129,16 @@ func (c Config) Validate() error {
 	if c.AdminToken == "" && !c.HasAppCredentials() {
 		return fmt.Errorf("either GITHUB_ADMIN_TOKEN or GITHUB_APP_ID/GITHUB_APP_INSTALLATION_ID/GITHUB_APP_PRIVATE_KEY must be set")
 	}
+	if (c.AuthUsername == "") != (c.AuthToken == "") {
+		return fmt.Errorf("AUTH_USERNAME and AUTH_TOKEN must both be set, or both left unset")
+	}
 	return nil
+}
+
+// RequiresAuth reports whether HTTP Basic Auth is configured for the
+// dashboard and API.
+func (c Config) RequiresAuth() bool {
+	return c.AuthUsername != "" && c.AuthToken != ""
 }
 
 // RESTBaseURL returns the REST API base URL: "<GHESBaseURL>/api/v3/" for a

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"os"
@@ -104,11 +105,22 @@ func run(logger *slog.Logger) error {
 	mux.Handle("/", noCache(http.FileServer(http.Dir("web/static"))))
 
 	webhookHandler := &webhook.Handler{Secret: cfg.WebhookSecret, Store: st, Logger: logger}
-	mux.Handle("/webhook/github", webhookHandler)
+
+	var handler http.Handler = mux
+	if cfg.RequiresAuth() {
+		handler = basicAuth(mux, cfg.AuthUsername, cfg.AuthToken)
+		logger.Info("HTTP Basic Auth enabled for dashboard and API")
+	} else {
+		logger.Warn("no AUTH_USERNAME/AUTH_TOKEN configured; dashboard and API are unauthenticated and must be placed behind an authenticating proxy")
+	}
+
+	topMux := http.NewServeMux()
+	topMux.Handle("/webhook/github", webhookHandler)
+	topMux.Handle("/", handler)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           accessLog(mux, logger),
+		Handler:           accessLog(topMux, logger),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -137,6 +149,23 @@ func noCache(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store, max-age=0")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// basicAuth requires HTTP Basic Auth credentials matching the configured
+// username/token before delegating to next, using constant-time comparisons
+// to avoid leaking credential length/content via timing.
+func basicAuth(next http.Handler, username, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		userMatch := subtle.ConstantTimeCompare([]byte(user), []byte(username)) == 1
+		passMatch := subtle.ConstantTimeCompare([]byte(pass), []byte(token)) == 1
+		if !ok || !userMatch || !passMatch {
+			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub Actions Monitor", charset="UTF-8"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }

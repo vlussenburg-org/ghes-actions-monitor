@@ -62,6 +62,7 @@ All configuration is via environment variables (see `internal/config`):
 | `GITHUB_ADMIN_TOKEN` | one of this or App creds | — | Admin PAT, used for all API calls in the MVP. |
 | `GITHUB_APP_ID` / `GITHUB_APP_INSTALLATION_ID` / `GITHUB_APP_PRIVATE_KEY` | one of this or admin token | — | GitHub App identity, used instead of the admin PAT for least-privilege polling. |
 | `GITHUB_WEBHOOK_SECRET` | no | — | HMAC secret for verifying inbound webhook deliveries. Strongly recommended in production. |
+| `AUTH_USERNAME` / `AUTH_TOKEN` | no (both required together) | — | Enables HTTP Basic Auth on the dashboard and API (not the webhook receiver, which uses `GITHUB_WEBHOOK_SECRET` instead). If unset, the dashboard/API have no built-in auth and **must** be placed behind an authenticating proxy. |
 | `DB_PATH` | no | `data/monitor.db` | SQLite database file path. |
 | `PORT` | no | `8080` | HTTP listen port. |
 | `WORKFLOW_POLL_INTERVAL` | no | `5m` | Any Go duration string. Active (queued/in_progress) run reconciliation sweep. Webhooks provide the primary live signal. |
