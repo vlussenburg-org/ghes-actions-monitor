@@ -347,8 +347,7 @@
     const historyState = { hours: 24, range: '24h' };
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
-    const zombiesMinutesSelect = document.getElementById('zombies-minutes-select');
-    const zombiesState = { loaded: false, minutes: Number(zombiesMinutesSelect.value), runs: [] };
+    const zombiesState = { loaded: false, minutes: Number(document.getElementById('zombies-minutes-select').value), runs: [] };
     let githubBaseURL = 'https://github.com';
     let orgName = '';
     const pageNames = {
@@ -853,7 +852,7 @@ ${rows.join('\n')}
     wireRefresh('runners-load-btn', () => { runnersState.loaded = false; loadRunners(); });
     wireRefresh('historic-runs-load-btn', () => { historicRunsState.loaded = false; loadHistoricRuns(); });
     wireRefresh('zombies-load-btn', () => { zombiesState.loaded = false; loadZombies(); });
-    zombiesMinutesSelect.addEventListener('change', (e) => {
+    document.getElementById('zombies-minutes-select').addEventListener('change', (e) => {
       zombiesState.minutes = Number(e.target.value);
       zombiesState.loaded = false;
       loadZombies();
