@@ -138,6 +138,7 @@ func TestHandleStatus_HappyPath(t *testing.T) {
 		queueDepth: store.QueueDepth{Queued: 3, InProgress: 5},
 		inFlight:   8,
 		outcomes:   map[string]int{"success": 10, "failure": 2},
+		zombieRuns: []store.WorkflowRun{{RunID: 1}, {RunID: 2}},
 	}
 	s := &Server{Store: fs, Org: "acme", Now: func() time.Time { return fixed }}
 
@@ -158,6 +159,9 @@ func TestHandleStatus_HappyPath(t *testing.T) {
 	}
 	if got.RecentOutcomes["success"] != 10 {
 		t.Errorf("expected success=10, got %+v", got.RecentOutcomes)
+	}
+	if got.ZombieCount != 2 {
+		t.Errorf("expected zombie_count=2, got %d", got.ZombieCount)
 	}
 	if !fs.lastSince.Equal(fixed.Add(-time.Hour)) {
 		t.Errorf("expected RecentOutcomes queried with 1h window, got since=%v", fs.lastSince)
@@ -188,6 +192,17 @@ func TestHandleStatus_InFlightError(t *testing.T) {
 
 func TestHandleStatus_OutcomesError(t *testing.T) {
 	fs := &fakeStore{outcomesErr: errors.New("db down")}
+	s := &Server{Store: fs}
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rec.Code)
+	}
+}
+
+func TestHandleStatus_ZombieRunsError(t *testing.T) {
+	fs := &fakeStore{zombieRunsErr: errors.New("db down")}
 	s := &Server{Store: fs}
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	rec := httptest.NewRecorder()

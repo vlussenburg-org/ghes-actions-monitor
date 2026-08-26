@@ -95,9 +95,15 @@ type statusResponse struct {
 	QueueDepth     store.QueueDepth `json:"queue_depth"`
 	InFlight       int              `json:"in_flight"`
 	RecentOutcomes map[string]int   `json:"recent_outcomes_1h"`
+	ZombieCount    int              `json:"zombie_count"`
 	GeneratedAt    time.Time        `json:"generated_at"`
 	RateLimit      any              `json:"rate_limit,omitempty"`
 }
+
+// defaultZombieStaleAfter matches the dashboard's default zombie-filter
+// staleness threshold, so the nav badge reflects the same window the
+// Zombie Runs page opens to before a user picks a different one.
+const defaultZombieStaleAfter = 24 * time.Hour
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -118,6 +124,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to compute recent outcomes")
 		return
 	}
+	zombies, err := s.Store.ZombieRuns(ctx, defaultZombieStaleAfter, now)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to compute zombie run count")
+		return
+	}
 
 	response := statusResponse{
 		Org:            s.Org,
@@ -125,6 +136,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		QueueDepth:     depth,
 		InFlight:       inFlight,
 		RecentOutcomes: outcomes,
+		ZombieCount:    len(zombies),
 		GeneratedAt:    now,
 	}
 	if s.RateLimit != nil {

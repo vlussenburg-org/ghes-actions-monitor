@@ -67,6 +67,29 @@ All configuration is via environment variables (see `internal/config`):
 | `WORKFLOW_POLL_INTERVAL` | no | `5m` | Any Go duration string. Active (queued/in_progress) run reconciliation sweep. Webhooks provide the primary live signal. |
 | `RUNNER_POLL_INTERVAL` | no | `10m` | Any Go duration string. |
 
+### `GITHUB_ADMIN_TOKEN` permissions
+
+The admin PAT needs organization-level access, since it lists every repo,
+reads workflow runs, cancels runs, and reads self-hosted runner group
+capacity for the whole org:
+
+- **Classic PAT** (required for GHES; also works on GHEC) — scopes:
+  - `repo` (full control of private repos) — required to read workflow runs
+    and cancel/force-cancel them across all repos, including private ones.
+  - `admin:org` — required to list org repos and read runner groups /
+    self-hosted runners (`GET /orgs/{org}/actions/runner-groups`, etc.).
+- **Fine-grained PAT** (GHEC only) — organization permissions:
+  - Actions: **Read and write** (read workflow runs, cancel/force-cancel).
+  - Administration: **Read-only** (list org repos).
+  - Self-hosted runners: **Read-only** (runner group capacity).
+
+Prefer the GitHub App credentials (`GITHUB_APP_ID` /
+`GITHUB_APP_INSTALLATION_ID` / `GITHUB_APP_PRIVATE_KEY`) for the polling
+path when available — grant the same Actions/Administration/Self-hosted
+runners permissions at the app level. The admin PAT remains the
+administrative credential used for cancellation and as the fallback for
+polling when App credentials aren't configured.
+
 ## Running locally
 
 ```sh

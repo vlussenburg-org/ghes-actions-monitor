@@ -845,6 +845,9 @@ ${rows.join('\n')}
         const queuedCount = status.queue_depth?.Queued ?? 0;
         document.getElementById('nav-active').textContent = activeCount;
         document.getElementById('nav-queued').textContent = queuedCount;
+        if (!zombiesState.loaded) {
+          document.getElementById('nav-zombies').textContent = status.zombie_count ?? 0;
+        }
         const cards = document.getElementById('summary-cards');
         cards.innerHTML = '';
         const successCount1h = status.recent_outcomes_1h?.success ?? 0;
