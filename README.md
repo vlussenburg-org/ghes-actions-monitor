@@ -23,6 +23,20 @@ reintroducing them later): health probes, incident detection, Slack
 alerting, GitHub App inventory, Okta-gated auth. Auth for the initial
 version is a single admin PAT (no OAuth yet).
 
+## Screenshots
+
+**Dashboard** — live queue depth and failure-rate charts, plus scan history:
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+**Zombie Runs** — queued/in-progress runs stuck past a configurable staleness window:
+
+![Zombie Runs](docs/screenshots/zombie-runs.png)
+
+**Runner Groups** — busy/idle/total capacity per self-hosted runner group:
+
+![Runner Groups](docs/screenshots/runner-groups.png)
+
 ## How it works
 
 1. **Webhook (push)** — configure an org webhook pointing at
