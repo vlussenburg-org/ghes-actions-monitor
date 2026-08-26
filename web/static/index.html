@@ -747,7 +747,7 @@ ${rows.join('\n')}
           const el = document.getElementById('error');
           el.textContent = `GitHub API rate limit active. Polling may be stale until ${retry}.`;
           el.style.display = 'block';
-        } else if (rateLimit && rateLimit.remaining === 0 && rateLimit.limit > 0 && rateLimit.reset_at && !rateLimit.reset_at.startsWith('0001-')) {
+        } else if (rateLimit && rateLimit.remaining === 0 && rateLimit.limit > 0 && rateLimit.reset_at && !rateLimit.reset_at.startsWith('0001-') && new Date(rateLimit.reset_at) > new Date()) {
           const reset = new Date(rateLimit.reset_at).toLocaleTimeString();
           const el = document.getElementById('error');
           el.textContent = `GitHub API rate limit exhausted. Polling may be stale until ${reset}.`;
@@ -766,9 +766,14 @@ ${rows.join('\n')}
         const rlBox = document.getElementById('sidebar-rate-limit');
         const rlText = document.getElementById('rate-limit-text');
         if (rateLimit && rateLimit.limit > 0) {
+          const resetAt = rateLimit.reset_at && !rateLimit.reset_at.startsWith('0001-') ? new Date(rateLimit.reset_at) : null;
+          const isStaleReset = resetAt && resetAt <= new Date();
           const pct = rateLimit.remaining / rateLimit.limit;
           rlText.textContent = `GitHub API remaining: ${rateLimit.remaining}/${rateLimit.limit}`;
-          rlText.style.color = pct <= 0.1 ? 'var(--danger)' : pct <= 0.3 ? '#d29922' : '';
+          rlText.style.color = !isStaleReset && pct <= 0.1 ? 'var(--danger)' : !isStaleReset && pct <= 0.3 ? '#d29922' : '';
+          rlText.title = resetAt
+            ? (isStaleReset ? 'Resets on the next API call' : `Resets at ${resetAt.toLocaleTimeString()}`)
+            : '';
           rlBox.style.display = 'flex';
         } else {
           rlBox.style.display = 'none';
