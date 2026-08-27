@@ -234,7 +234,7 @@
         <div class="toolbar" id="range-toolbar">
           <button data-hours="1" data-range="1h">1h</button>
           <button data-hours="6" data-range="6h">6h</button>
-          <button data-hours="24" data-range="24h" class="selected">24h</button>
+          <button data-hours="24" data-range="24h">24h</button>
           <button data-hours="72" data-range="3d">3d</button>
           <button data-hours="168" data-range="7d">7d</button>
           <button data-hours="168" data-range="all">All</button>
@@ -346,7 +346,7 @@
   </div>
 
   <script>
-    const historyState = { hours: 24, range: '24h' };
+    const historyState = { hours: 1, range: '1h' };
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
     const zombiesState = { loaded: false, minutes: Number(document.getElementById('zombies-minutes-select').value), runs: [] };
