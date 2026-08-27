@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -104,7 +103,7 @@ func run(logger *slog.Logger) error {
 		apiServer.Refresher = p
 	}
 	mux := apiServer.Routes()
-	mux.Handle("/", noCache(spaRoutes(http.FileServer(http.Dir("web/static")))))
+	mux.Handle("/", noCache(http.FileServer(http.Dir("web/static"))))
 
 	webhookHandler := &webhook.Handler{Secret: cfg.WebhookSecret, Store: st, Logger: logger}
 
@@ -144,32 +143,6 @@ func run(logger *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
-}
-
-// dashboardPages are the client-side routes the dashboard serves as real
-// paths (e.g. /zombies) rather than URL fragments. Each is rendered by the
-// same single-page index.html, which reads window.location.pathname to pick
-// the view.
-var dashboardPages = map[string]struct{}{
-	"/active":        {},
-	"/queued":        {},
-	"/historic-runs": {},
-	"/runners":       {},
-	"/zombies":       {},
-}
-
-// spaRoutes serves index.html for the dashboard's client-side routes so a
-// deep link or refresh on e.g. /zombies works, instead of 404ing because no
-// such file exists. Everything else (including static assets and unknown
-// paths) falls through to the file server unchanged.
-func spaRoutes(files http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := dashboardPages[strings.TrimSuffix(r.URL.Path, "/")]; ok {
-			http.ServeFile(w, r, "web/static/index.html")
-			return
-		}
-		files.ServeHTTP(w, r)
-	})
 }
 
 func noCache(next http.Handler) http.Handler {

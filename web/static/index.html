@@ -347,8 +347,12 @@
   <script>
     const rangeHours = { '1h': 1, '6h': 6, '24h': 24, '3d': 72, '7d': 168, all: 168 };
     const defaultRange = '1h';
+    const defaultPage = 'dashboard';
+    // Read only the range here; parseHash() also normalizes the page, which
+    // depends on pageNames/pageAliases declared below.
     const initialRange = (() => {
-      const range = new URLSearchParams(window.location.search).get('range');
+      const query = window.location.hash.slice(1).split('?')[1];
+      const range = new URLSearchParams(query || '').get('range');
       return Object.prototype.hasOwnProperty.call(rangeHours, range) ? range : defaultRange;
     })();
     const historyState = { hours: rangeHours[initialRange], range: initialRange };
@@ -547,18 +551,34 @@
     function navigateToPage(page) {
       page = normalizePage(page);
       const url = pageURL(page, historyState.range);
-      if (window.location.pathname + window.location.search !== url) {
+      if (window.location.pathname + window.location.hash !== url) {
         window.history.pushState({}, '', url);
       }
       showPage(page);
     }
 
-    // pageURL builds the canonical URL for a view: pages are real paths
-    // (/zombies), the dashboard is "/", and the range is only present when
-    // it differs from the default, so the common case stays a clean "/".
+    // pageURL builds the canonical URL for a view. All state lives in the
+    // fragment (e.g. "#zombies?range=6h") so it stays purely client-side
+    // and never reaches the server. Defaults are omitted, so the common
+    // case is a bare "/" rather than "/?range=1h#dashboard".
     function pageURL(page, range) {
-      const path = page === 'dashboard' ? '/' : `/${page}`;
-      return range && range !== defaultRange ? `${path}?range=${range}` : path;
+      const parts = [];
+      if (page && page !== defaultPage) parts.push(page);
+      if (range && range !== defaultRange) parts.push(`?range=${range}`);
+      const hash = parts.join('');
+      return `${window.location.pathname}${hash ? `#${hash}` : ''}`;
+    }
+
+    // parseHash splits a fragment like "zombies?range=6h" into its page and
+    // range, tolerating either half being absent.
+    function parseHash() {
+      const raw = window.location.hash.slice(1);
+      const [page, query] = raw.split('?');
+      const range = new URLSearchParams(query || '').get('range');
+      return {
+        page: normalizePage(page),
+        range: Object.prototype.hasOwnProperty.call(rangeHours, range) ? range : defaultRange,
+      };
     }
 
     function setHistoryRange(hours, range) {
@@ -990,19 +1010,24 @@ ${rows.join('\n')}
         button.disabled = false;
       });
     });
-    // loadPageFromURL resolves the view from the path (/zombies), falling
-    // back to a legacy #hash so old bookmarks keep working — those are
-    // rewritten to the equivalent path so the ugly fragment doesn't stick
-    // around in the address bar.
+    // loadPageFromURL applies both halves of the fragment, so a shared link
+    // like "#zombies?range=6h" restores the view and its range together. The
+    // URL is the source of truth: the toolbar is always resynced from it, and
+    // the fragment is rewritten to its canonical form so an unknown or
+    // omitted value settles on the default instead of silently disagreeing
+    // with the displayed state.
     function loadPageFromURL() {
-      const hash = window.location.hash.slice(1);
-      if (hash) {
-        const page = normalizePage(hash);
-        window.history.replaceState({}, '', pageURL(page, historyState.range));
-        showPage(page);
-        return;
+      const { page, range } = parseHash();
+      const changed = range !== historyState.range;
+      historyState.range = range;
+      historyState.hours = rangeHours[range];
+      updateRangeButtons();
+      showPage(page);
+      const canonical = pageURL(page, range);
+      if (window.location.pathname + window.location.hash !== canonical) {
+        window.history.replaceState({}, '', canonical);
       }
-      showPage(normalizePage(window.location.pathname.replace(/^\/|\/$/g, '')));
+      if (changed) refresh();
     }
     window.addEventListener('popstate', loadPageFromURL);
     window.addEventListener('hashchange', loadPageFromURL);
