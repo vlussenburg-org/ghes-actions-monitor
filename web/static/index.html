@@ -346,11 +346,13 @@
 
   <script>
     const rangeHours = { '1h': 1, '6h': 6, '24h': 24, '3d': 72, '7d': 168, all: 168 };
+    const defaultRange = '1h';
     const initialRange = (() => {
       const range = new URLSearchParams(window.location.search).get('range');
-      return Object.prototype.hasOwnProperty.call(rangeHours, range) ? range : '1h';
+      return Object.prototype.hasOwnProperty.call(rangeHours, range) ? range : defaultRange;
     })();
     const historyState = { hours: rangeHours[initialRange], range: initialRange };
+    let currentPage = 'dashboard';
     const historicRunsState = { page: 1, limit: 50, sort: 'updated_at', order: 'desc', total: 0, loaded: false };
     const runnersState = { loaded: false };
     const zombiesState = { loaded: false, minutes: Number(document.getElementById('zombies-minutes-select').value), runs: [] };
@@ -524,6 +526,7 @@
 
     function showPage(page) {
       page = normalizePage(page);
+      currentPage = page;
       document.querySelectorAll('.page').forEach((el) => el.classList.remove('active'));
       document.getElementById(`page-${page}`)?.classList.add('active');
       document.getElementById('page-title').textContent = pageNames[page] || 'Dashboard';
@@ -543,18 +546,25 @@
 
     function navigateToPage(page) {
       page = normalizePage(page);
-      if (window.location.hash !== `#${page}`) {
-        window.history.pushState({}, '', `#${page}`);
+      const url = pageURL(page, historyState.range);
+      if (window.location.pathname + window.location.search !== url) {
+        window.history.pushState({}, '', url);
       }
       showPage(page);
+    }
+
+    // pageURL builds the canonical URL for a view: pages are real paths
+    // (/zombies), the dashboard is "/", and the range is only present when
+    // it differs from the default, so the common case stays a clean "/".
+    function pageURL(page, range) {
+      const path = page === 'dashboard' ? '/' : `/${page}`;
+      return range && range !== defaultRange ? `${path}?range=${range}` : path;
     }
 
     function setHistoryRange(hours, range) {
       historyState.hours = hours;
       historyState.range = range;
-      const params = new URLSearchParams(window.location.search);
-      params.set('range', range);
-      window.history.replaceState({}, '', `${window.location.pathname}?${params}${window.location.hash}`);
+      window.history.replaceState({}, '', pageURL(currentPage, range));
       updateRangeButtons();
       refresh();
     }
@@ -895,11 +905,6 @@ ${rows.join('\n')}
       }
     }
 
-    if (!new URLSearchParams(window.location.search).has('range')) {
-      const params = new URLSearchParams(window.location.search);
-      params.set('range', historyState.range);
-      window.history.replaceState({}, '', `${window.location.pathname}?${params}${window.location.hash}`);
-    }
     updateRangeButtons();
     refresh();
     setInterval(refresh, 10000);
@@ -985,8 +990,19 @@ ${rows.join('\n')}
         button.disabled = false;
       });
     });
+    // loadPageFromURL resolves the view from the path (/zombies), falling
+    // back to a legacy #hash so old bookmarks keep working — those are
+    // rewritten to the equivalent path so the ugly fragment doesn't stick
+    // around in the address bar.
     function loadPageFromURL() {
-      showPage(window.location.hash.slice(1) || 'dashboard');
+      const hash = window.location.hash.slice(1);
+      if (hash) {
+        const page = normalizePage(hash);
+        window.history.replaceState({}, '', pageURL(page, historyState.range));
+        showPage(page);
+        return;
+      }
+      showPage(normalizePage(window.location.pathname.replace(/^\/|\/$/g, '')));
     }
     window.addEventListener('popstate', loadPageFromURL);
     window.addEventListener('hashchange', loadPageFromURL);
