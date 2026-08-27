@@ -76,6 +76,12 @@ type Config struct {
 	// and history sweeps can never revisit on their own.
 	StaleRunReconcileAfter time.Duration
 
+	// APIAccessLog enables one log line per outgoing GitHub API request
+	// (method, path, status, remaining rate-limit budget). Off by default
+	// because a busy org produces a lot of lines; turn it on to find what
+	// is spending the rate limit.
+	APIAccessLog bool
+
 	// DBPath is the local SQLite database file path.
 	DBPath string
 }
@@ -92,6 +98,7 @@ func Load() (Config, error) {
 		WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"),
 		AuthUsername:  os.Getenv("AUTH_USERNAME"),
 		AuthToken:     os.Getenv("AUTH_TOKEN"),
+		APIAccessLog:  getEnvBool("GITHUB_API_ACCESS_LOG"),
 		DBPath:        getEnvDefault("DB_PATH", "data/monitor.db"),
 	}
 
@@ -192,6 +199,13 @@ func getEnvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// getEnvBool reports whether an env var is set to a truthy value. Anything
+// unparseable is treated as false so a typo cannot enable verbose logging.
+func getEnvBool(key string) bool {
+	v, err := strconv.ParseBool(os.Getenv(key))
+	return err == nil && v
 }
 
 func getEnvInt64(key string, def int64) (int64, error) {

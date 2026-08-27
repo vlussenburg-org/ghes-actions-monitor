@@ -15,6 +15,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +55,36 @@ type RateLimitTracker struct {
 	status       RateLimitStatus
 	backoffUntil time.Time
 	base         http.RoundTripper
+
+	// AccessLog, when non-nil, receives one line per outgoing GitHub API
+	// request. Every call the monitor makes passes through this transport,
+	// so it is the single place that can answer "what is spending the rate
+	// limit budget". Off unless GITHUB_API_ACCESS_LOG is set, since a busy
+	// org produces a lot of lines.
+	AccessLog *slog.Logger
+}
+
+// logRequest emits one access-log line for a completed GitHub API request,
+// including the remaining rate-limit budget reported by the response so the
+// log shows which calls are draining the quota.
+func (t *RateLimitTracker) logRequest(req *http.Request, resp *http.Response, err error, start time.Time) {
+	if t.AccessLog == nil {
+		return
+	}
+	attrs := []any{
+		"method", req.Method,
+		"url", req.URL.Path,
+		"query", req.URL.RawQuery,
+		"duration_ms", time.Since(start).Milliseconds(),
+	}
+	if resp != nil {
+		attrs = append(attrs, "status", resp.StatusCode,
+			"rate_limit_remaining", resp.Header.Get("X-RateLimit-Remaining"))
+	}
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	t.AccessLog.Info("github api request", attrs...)
 }
 
 func (t *RateLimitTracker) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -64,7 +95,9 @@ func (t *RateLimitTracker) RoundTrip(req *http.Request) (*http.Response, error) 
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	start := time.Now()
 	resp, err := base.RoundTrip(req)
+	t.logRequest(req, resp, err, start)
 	if resp != nil {
 		t.mu.Lock()
 		if v, e := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining")); e == nil {
@@ -181,13 +214,22 @@ func (t *RateLimitTracker) rateLimitedLocked(now time.Time) (bool, time.Time) {
 	return false, time.Time{}
 }
 
+// accessLog returns the logger used for the outgoing GitHub API access
+// log, or nil when it is disabled.
+func accessLog(cfg config.Config) *slog.Logger {
+	if !cfg.APIAccessLog {
+		return nil
+	}
+	return slog.Default()
+}
+
 // New builds the configured clients for the given instance (GHES or GHEC,
 // as resolved by cfg). The App client, if configured, uses an
 // auto-refreshing installation-token transport (see appTransport below).
 func New(cfg config.Config) (*Clients, error) {
 	c := &Clients{}
 	if cfg.HasAppCredentials() {
-		c.AppRateLimit = &RateLimitTracker{}
+		c.AppRateLimit = &RateLimitTracker{AccessLog: accessLog(cfg)}
 		appClient, err := newAppClient(cfg, c.AppRateLimit)
 		if err != nil {
 			return nil, fmt.Errorf("build app client: %w", err)
@@ -196,7 +238,7 @@ func New(cfg config.Config) (*Clients, error) {
 	}
 
 	if cfg.AdminToken != "" {
-		c.AdminRateLimit = &RateLimitTracker{}
+		c.AdminRateLimit = &RateLimitTracker{AccessLog: accessLog(cfg)}
 		adminClient, err := newTokenClient(cfg, cfg.AdminToken, c.AdminRateLimit)
 		if err != nil {
 			return nil, fmt.Errorf("build admin client: %w", err)

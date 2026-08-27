@@ -1,12 +1,14 @@
 package ghclient
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -291,5 +293,43 @@ func TestRateLimitTracker_RateLimitStatusUnknown(t *testing.T) {
 	tr := &RateLimitTracker{}
 	if got := tr.RateLimitStatus(); got != nil {
 		t.Fatalf("expected nil status before headers are observed, got %+v", got)
+	}
+}
+
+func TestRoundTripAccessLog(t *testing.T) {
+	var buf bytes.Buffer
+	tracker := &RateLimitTracker{
+		AccessLog: slog.New(slog.NewTextHandler(&buf, nil)),
+		base: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"X-Ratelimit-Remaining": []string{"4321"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		}),
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://api.github.com/repos/acme/widgets/actions/runs?status=queued", nil)
+
+	if _, err := tracker.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+
+	line := buf.String()
+	for _, want := range []string{"github api request", "/repos/acme/widgets/actions/runs", "status=queued", "rate_limit_remaining=4321"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("access log missing %q, got: %s", want, line)
+		}
+	}
+}
+
+func TestRoundTripAccessLogDisabledByDefault(t *testing.T) {
+	tracker := &RateLimitTracker{
+		base: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}),
+	}
+	// Nil AccessLog must be a no-op rather than a nil-pointer panic.
+	if _, err := tracker.RoundTrip(httptest.NewRequest(http.MethodGet, "https://api.github.com/rate_limit", nil)); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
 	}
 }
