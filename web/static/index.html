@@ -469,17 +469,22 @@
       if (!outcomes || outcomes.length === 0) return [];
       const buckets = new Map();
       for (const o of outcomes) {
-        const t = new Date(o.CompletedAt).getTime();
-        const minute = Math.floor(t / 60000) * 60000;
+        // Only success/failure define a failure rate. Runs ending as
+        // action_required/skipped/cancelled are ignored entirely, so they
+        // never create an empty bucket: a bucket with no success or failure
+        // would otherwise yield a null rate, which breaks the line into
+        // disconnected segments and, when every bucket is null, renders an
+        // empty chart instead of the "no completed runs" message.
+        if (o.Conclusion !== 'success' && o.Conclusion !== 'failure') continue;
+        const minute = Math.floor(new Date(o.CompletedAt).getTime() / 60000) * 60000;
         if (!buckets.has(minute)) buckets.set(minute, { success: 0, failure: 0 });
         const bucket = buckets.get(minute);
         if (o.Conclusion === 'success') bucket.success++;
-        else if (o.Conclusion === 'failure') bucket.failure++;
+        else bucket.failure++;
       }
-      return [...buckets.entries()].sort(([a], [b]) => a - b).map(([t, b]) => {
-        const total = b.success + b.failure;
-        return { t, total, rate: total > 0 ? (b.failure / total) * 100 : null };
-      });
+      return [...buckets.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([t, b]) => ({ t, total: b.success + b.failure, rate: (b.failure / (b.success + b.failure)) * 100 }));
     }
 
     let failureRateChart = null;
@@ -507,7 +512,7 @@
                 ...chartCommonOptions.plugins.tooltip,
                 callbacks: {
                   ...chartCommonOptions.plugins.tooltip.callbacks,
-                  label: (ctx) => `Failure rate: ${ctx.parsed.y.toFixed(1)}% (${ctx.raw.total} runs)`,
+                  label: (ctx) => `Failure rate: ${Number(ctx.parsed.y ?? 0).toFixed(1)}% (${ctx.raw.total} runs)`,
                 },
               },
             },
