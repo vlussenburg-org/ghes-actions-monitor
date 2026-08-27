@@ -23,45 +23,6 @@ func TestOpen_Migrates(t *testing.T) {
 	}
 }
 
-func TestWorkflowRun_UpsertAndInFlight(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	now := time.Now().UTC()
-
-	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
-		RunID: 1, Repo: "org/a", Name: "CI", Status: "queued", UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
-		RunID: 2, Repo: "org/b", Name: "CI", Status: "in_progress", UpdatedAt: now,
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-
-	n, err := s.InFlightCount(ctx)
-	if err != nil {
-		t.Fatalf("InFlightCount: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("expected 2 in-flight runs, got %d", n)
-	}
-
-	// Transition run 1 to completed; in-flight should drop to 1.
-	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
-		RunID: 1, Repo: "org/a", Name: "CI", Status: "completed", Conclusion: "success", UpdatedAt: now.Add(time.Minute),
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	n, err = s.InFlightCount(ctx)
-	if err != nil {
-		t.Fatalf("InFlightCount: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("expected 1 in-flight run after completion, got %d", n)
-	}
-}
-
 func TestQueueDepth(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

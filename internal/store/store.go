@@ -86,53 +86,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
 	}
-	return s.coalesceQueueDepthSnapshots(ctx)
-}
-
-func (s *Store) coalesceQueueDepthSnapshots(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT queued, in_progress, captured_at
-		FROM queue_depth_snapshots
-		ORDER BY id`)
-	if err != nil {
-		return fmt.Errorf("query queue depth snapshots for migration: %w", err)
-	}
-	defer rows.Close()
-
-	latest := make(map[time.Time]QueueDepthSnapshot)
-	for rows.Next() {
-		var snap QueueDepthSnapshot
-		if err := rows.Scan(&snap.Queued, &snap.InProgress, &snap.CapturedAt); err != nil {
-			return fmt.Errorf("scan queue depth snapshot for migration: %w", err)
-		}
-		snap.CapturedAt = snap.CapturedAt.UTC().Truncate(time.Minute)
-		latest[snap.CapturedAt] = snap
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate queue depth snapshots for migration: %w", err)
-	}
-	if len(latest) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin queue depth snapshot migration: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM queue_depth_snapshots`); err != nil {
-		return fmt.Errorf("clear queue depth snapshots for migration: %w", err)
-	}
-	for _, snap := range latest {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO queue_depth_snapshots (queued, in_progress, captured_at)
-			VALUES (?, ?, ?)`, snap.Queued, snap.InProgress, snap.CapturedAt); err != nil {
-			return fmt.Errorf("rewrite queue depth snapshot for migration: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit queue depth snapshot migration: %w", err)
-	}
 	return nil
 }
 
@@ -237,25 +190,6 @@ func (s *Store) closeStaleActiveRun(ctx context.Context, runID int64, completedA
 		return fmt.Errorf("insert unknown-status workflow run: %w", err)
 	}
 	return nil
-}
-
-// InFlightCount returns the number of distinct runs currently in a
-// non-terminal status ("queued" or "in_progress"), based on each run's most
-// recent recorded state.
-func (s *Store) InFlightCount(ctx context.Context) (int, error) {
-	const q = `
-		SELECT COUNT(*) FROM (
-			SELECT run_id, status FROM workflow_runs w1
-			WHERE w1.id = (
-				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-			)
-		) latest
-		WHERE latest.status IN ('queued', 'in_progress')`
-	var n int
-	if err := s.db.QueryRowContext(ctx, q).Scan(&n); err != nil {
-		return 0, fmt.Errorf("count in-flight runs: %w", err)
-	}
-	return n, nil
 }
 
 // QueueDepth reports how many distinct runs are currently queued (waiting
