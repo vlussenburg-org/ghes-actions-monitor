@@ -453,28 +453,21 @@
       queueChart.update();
     }
 
-    // Buckets completed-run outcomes into a fixed number of time windows and
-    // returns the failure rate (%) per bucket, so a long history range still
-    // renders a smooth trend line instead of a noisy per-run scatter.
-    function bucketFailureRate(outcomes, bucketCount) {
+    // Buckets completed-run outcomes by UTC minute and returns the failure
+    // rate (%) for each minute containing at least one success or failure.
+    function bucketFailureRate(outcomes) {
       if (!outcomes || outcomes.length === 0) return [];
-      const times = outcomes.map((o) => new Date(o.CompletedAt).getTime());
-      const minT = Math.min(...times), maxT = Math.max(...times);
-      const span = Math.max(1, maxT - minT);
-      const buckets = Array.from({ length: bucketCount }, () => ({ success: 0, failure: 0, other: 0 }));
+      const buckets = new Map();
       for (const o of outcomes) {
         const t = new Date(o.CompletedAt).getTime();
-        let idx = Math.floor(((t - minT) / span) * bucketCount);
-        if (idx >= bucketCount) idx = bucketCount - 1;
-        if (idx < 0) idx = 0;
-        const bucket = buckets[idx];
+        const minute = Math.floor(t / 60000) * 60000;
+        if (!buckets.has(minute)) buckets.set(minute, { success: 0, failure: 0 });
+        const bucket = buckets.get(minute);
         if (o.Conclusion === 'success') bucket.success++;
         else if (o.Conclusion === 'failure') bucket.failure++;
-        else bucket.other++;
       }
-      return buckets.map((b, i) => {
+      return [...buckets.entries()].sort(([a], [b]) => a - b).map(([t, b]) => {
         const total = b.success + b.failure;
-        const t = minT + (span / bucketCount) * (i + 0.5);
         return { t, total, rate: total > 0 ? (b.failure / total) * 100 : null };
       });
     }
@@ -482,7 +475,7 @@
     let failureRateChart = null;
     function drawFailureRateChart(outcomes) {
       const canvas = document.getElementById('failure-rate-chart');
-      const buckets = bucketFailureRate(outcomes, 24).filter((b) => b.total > 0);
+      const buckets = bucketFailureRate(outcomes);
 
       if (!failureRateChart) {
         failureRateChart = new Chart(canvas.getContext('2d'), {
