@@ -473,7 +473,7 @@
         else bucket.other++;
       }
       return buckets.map((b, i) => {
-        const total = b.success + b.failure + b.other;
+        const total = b.success + b.failure;
         const t = minT + (span / bucketCount) * (i + 0.5);
         return { t, total, rate: total > 0 ? (b.failure / total) * 100 : null };
       });
