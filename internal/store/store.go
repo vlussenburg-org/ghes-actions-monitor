@@ -86,6 +86,53 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
 	}
+	return s.coalesceQueueDepthSnapshots(ctx)
+}
+
+func (s *Store) coalesceQueueDepthSnapshots(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT queued, in_progress, captured_at
+		FROM queue_depth_snapshots
+		ORDER BY id`)
+	if err != nil {
+		return fmt.Errorf("query queue depth snapshots for migration: %w", err)
+	}
+	defer rows.Close()
+
+	latest := make(map[time.Time]QueueDepthSnapshot)
+	for rows.Next() {
+		var snap QueueDepthSnapshot
+		if err := rows.Scan(&snap.Queued, &snap.InProgress, &snap.CapturedAt); err != nil {
+			return fmt.Errorf("scan queue depth snapshot for migration: %w", err)
+		}
+		snap.CapturedAt = snap.CapturedAt.UTC().Truncate(time.Minute)
+		latest[snap.CapturedAt] = snap
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate queue depth snapshots for migration: %w", err)
+	}
+	if len(latest) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin queue depth snapshot migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM queue_depth_snapshots`); err != nil {
+		return fmt.Errorf("clear queue depth snapshots for migration: %w", err)
+	}
+	for _, snap := range latest {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO queue_depth_snapshots (queued, in_progress, captured_at)
+			VALUES (?, ?, ?)`, snap.Queued, snap.InProgress, snap.CapturedAt); err != nil {
+			return fmt.Errorf("rewrite queue depth snapshot for migration: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit queue depth snapshot migration: %w", err)
+	}
 	return nil
 }
 
@@ -496,13 +543,38 @@ type QueueDepthSnapshot struct {
 }
 
 // RecordQueueDepthSnapshot stores a queue depth reading for the time series.
+// Multiple readings in the same UTC minute replace one another so webhook
+// bursts do not create noisy duplicate points.
 func (s *Store) RecordQueueDepthSnapshot(ctx context.Context, snap QueueDepthSnapshot) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO queue_depth_snapshots (queued, in_progress, captured_at)
-		VALUES (?, ?, ?)`,
-		snap.Queued, snap.InProgress, snap.CapturedAt)
+	bucket := snap.CapturedAt.UTC().Truncate(time.Minute)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("record queue depth snapshot: %w", err)
+		return fmt.Errorf("begin queue depth snapshot transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE queue_depth_snapshots
+		SET queued = ?, in_progress = ?
+		WHERE captured_at = ?`,
+		snap.Queued, snap.InProgress, bucket)
+	if err != nil {
+		return fmt.Errorf("update queue depth snapshot: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count updated queue depth snapshots: %w", err)
+	}
+	if updated == 0 {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO queue_depth_snapshots (queued, in_progress, captured_at)
+			VALUES (?, ?, ?)`,
+			snap.Queued, snap.InProgress, bucket); err != nil {
+			return fmt.Errorf("insert queue depth snapshot: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit queue depth snapshot: %w", err)
 	}
 	return nil
 }

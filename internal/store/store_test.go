@@ -540,6 +540,35 @@ func TestQueueDepthHistory_ReturnsOrderedSnapshotsSinceCutoff(t *testing.T) {
 	}
 }
 
+func TestRecordQueueDepthSnapshot_CoalescesWithinMinute(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	base := time.Date(2024, 1, 1, 12, 0, 10, 0, time.UTC)
+
+	for _, snap := range []QueueDepthSnapshot{
+		{Queued: 5, InProgress: 2, CapturedAt: base},
+		{Queued: 1, InProgress: 4, CapturedAt: base.Add(40 * time.Second)},
+	} {
+		if err := s.RecordQueueDepthSnapshot(ctx, snap); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+
+	history, err := s.QueueDepthHistory(ctx, base.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("QueueDepthHistory: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected one coalesced point, got %+v", history)
+	}
+	if history[0].Queued != 1 || history[0].InProgress != 4 {
+		t.Fatalf("expected latest bucket values, got %+v", history[0])
+	}
+	if !history[0].CapturedAt.Equal(base.Truncate(time.Minute)) {
+		t.Fatalf("expected minute bucket timestamp, got %v", history[0].CapturedAt)
+	}
+}
+
 func TestQueueDepthHistory_EmptyWhenNoSnapshots(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
