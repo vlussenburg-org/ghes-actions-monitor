@@ -67,13 +67,14 @@ func run(logger *slog.Logger) error {
 	var p *poller.Poller
 	if pollClient != nil {
 		p = &poller.Poller{
-			Client:           &poller.GHClientAdapter{Client: pollClient},
-			Store:            st,
-			Org:              cfg.Org,
-			Logger:           logger,
-			WorkflowInterval: cfg.WorkflowPollInterval,
-			RunnerInterval:   cfg.RunnerPollInterval,
-			SpotCheckWindow:  cfg.WorkflowSpotCheckWindow,
+			Client:                 &poller.GHClientAdapter{Client: pollClient},
+			Store:                  st,
+			Org:                    cfg.Org,
+			Logger:                 logger,
+			WorkflowInterval:       cfg.WorkflowPollInterval,
+			RunnerInterval:         cfg.RunnerPollInterval,
+			SpotCheckWindow:        cfg.WorkflowSpotCheckWindow,
+			StaleRunReconcileAfter: cfg.StaleRunReconcileAfter,
 		}
 		if clients.RateLimit != nil {
 			p.RateLimiter = clients.RateLimit

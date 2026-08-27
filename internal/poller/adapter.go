@@ -154,6 +154,24 @@ func (a *GHClientAdapter) ListRecentWorkflowRuns(ctx context.Context, owner, rep
 	return runs.WorkflowRuns, nil
 }
 
+// GetWorkflowRun fetches a single workflow run by ID directly, bypassing
+// any created-date filter or pagination window. Used to reconcile
+// individual runs (e.g. long-stale queued/in_progress rows) that the
+// date-bounded recent-history and repo-activity-scoped sweeps can never
+// revisit. Returns (nil, nil) if GitHub reports the run no longer exists
+// (404), since that's a valid terminal state for reconciliation purposes,
+// not an error.
+func (a *GHClientAdapter) GetWorkflowRun(ctx context.Context, owner, repo string, runID int64) (*github.WorkflowRun, error) {
+	run, resp, err := a.Client.Actions.GetWorkflowRunByID(ctx, owner, repo, runID)
+	if err != nil {
+		if resp != nil && resp.StatusCode == http.StatusNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get workflow run %d for %s/%s: %w", runID, owner, repo, err)
+	}
+	return run, nil
+}
+
 // ListRunnerGroups returns every runner group configured for the org.
 func (a *GHClientAdapter) ListRunnerGroups(ctx context.Context, org string) ([]*github.RunnerGroup, error) {
 	groups, _, err := a.Client.Actions.ListOrganizationRunnerGroups(ctx, org, &github.ListOrgRunnerGroupOptions{

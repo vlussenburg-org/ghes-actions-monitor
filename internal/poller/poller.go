@@ -36,6 +36,12 @@ type Store interface {
 	// to target its per-cycle REST spot-check sweep at repos webhooks say
 	// are actually seeing job activity.
 	RecentlyActiveRepos(ctx context.Context, since time.Time) ([]string, error)
+	// ZombieRuns returns runs whose latest recorded state is still queued
+	// or in_progress but hasn't been updated in over staleAfter. The
+	// poller uses this to find runs the repo-activity-scoped spot-check
+	// sweep will never revisit (because their repo has gone quiet) and
+	// reconcile them directly by run ID instead.
+	ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]store.WorkflowRun, error)
 }
 
 // GitHubClient is the subset of the go-github client surface the poller
@@ -47,6 +53,10 @@ type GitHubClient interface {
 	ListRecentWorkflowRuns(ctx context.Context, owner, repo string) ([]*github.WorkflowRun, error)
 	ListRunnerGroups(ctx context.Context, org string) ([]*github.RunnerGroup, error)
 	ListRunnerGroupRunners(ctx context.Context, org string, groupID int64) ([]*github.Runner, error)
+	// GetWorkflowRun fetches a single run by ID directly, regardless of
+	// age or which repo it belongs to. Returns (nil, nil) if GitHub no
+	// longer has the run (e.g. deleted), which is a valid terminal state.
+	GetWorkflowRun(ctx context.Context, owner, repo string, runID int64) (*github.WorkflowRun, error)
 }
 
 // RateLimiter reports whether the shared GitHub API budget is currently
@@ -73,6 +83,13 @@ type Poller struct {
 	// recorded (any status) within this window are polled, rather than
 	// every repo in the org. Defaults to 24h.
 	SpotCheckWindow time.Duration
+	// StaleRunReconcileAfter bounds how long a run may sit as queued or
+	// in_progress before pollStaleRuns fetches its true current state
+	// directly by run ID. This catches runs the repo-activity-scoped
+	// spot-check sweep (pollWorkflowRuns) can never revisit once a repo
+	// stops seeing new webhook activity, plus runs older than the
+	// date-bounded history sweep's window. Defaults to 3h.
+	StaleRunReconcileAfter time.Duration
 
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
@@ -85,29 +102,35 @@ type Poller struct {
 }
 
 // RefreshNow runs one immediate pass of every poll sweep (active workflow
-// runs, recent/historic workflow runs, and runner capacity), bypassing the
-// configured intervals. Used to back a manual "force refresh" action so
-// staleness isn't limited by the poll ticker cadence.
+// runs, recent/historic workflow runs, stale-run reconciliation, and
+// runner capacity), bypassing the configured intervals. Used to back a
+// manual "force refresh" action so staleness isn't limited by the poll
+// ticker cadence.
 func (p *Poller) RefreshNow(ctx context.Context) {
 	p.pollWorkflowRuns(ctx)
 	p.pollHistory(ctx)
+	p.pollStaleRuns(ctx)
 	p.pollRunners(ctx)
 }
 
-// Run blocks, polling active workflow runs and runner capacity on their
-// configured intervals until ctx is cancelled. Historic workflow run polling is
-// intentionally manual-only via RefreshNow because it is much more expensive
-// than the live active-run sweep.
+// Run blocks, polling active workflow runs, stale-run reconciliation, and
+// runner capacity on their configured intervals until ctx is cancelled.
+// Historic workflow run polling is intentionally manual-only via
+// RefreshNow because it is much more expensive than the live active-run
+// sweep.
 func (p *Poller) Run(ctx context.Context) {
 	workflowTicker := time.NewTicker(p.intervalOrDefault(p.WorkflowInterval, 5*time.Minute))
 	defer workflowTicker.Stop()
 	runnerTicker := time.NewTicker(p.intervalOrDefault(p.RunnerInterval, 10*time.Minute))
 	defer runnerTicker.Stop()
+	staleRunTicker := time.NewTicker(p.intervalOrDefault(p.WorkflowInterval, 5*time.Minute))
+	defer staleRunTicker.Stop()
 
 	// Run once immediately so the dashboard has data without waiting a full
 	// interval after startup.
 	p.pollWorkflowRuns(ctx)
 	p.pollRunners(ctx)
+	p.pollStaleRuns(ctx)
 
 	for {
 		select {
@@ -117,6 +140,8 @@ func (p *Poller) Run(ctx context.Context) {
 			p.pollWorkflowRuns(ctx)
 		case <-runnerTicker.C:
 			p.pollRunners(ctx)
+		case <-staleRunTicker.C:
+			p.pollStaleRuns(ctx)
 		}
 	}
 }
@@ -305,6 +330,62 @@ func (p *Poller) pollHistory(ctx context.Context) {
 			if err := p.Store.UpsertWorkflowRun(ctx, toStoreRun(p.Org, repo, r, p.now())); err != nil {
 				p.logger().Error("poll: failed to store historic workflow run", "repo", repo, "run_id", r.GetID(), "error", err)
 			}
+		}
+	}
+}
+
+// pollStaleRuns reconciles runs whose latest recorded state is still
+// queued/in_progress but hasn't been updated in over
+// StaleRunReconcileAfter, by fetching each one directly by run ID. This
+// exists because the other sweeps can each leave a run permanently stuck:
+// pollWorkflowRuns only rechecks repos with recent webhook activity
+// (RecentlyActiveRepos), and pollHistory/ListRecentWorkflowRuns only looks
+// back a fixed, date-bounded window. A run in a repo that's gone quiet, or
+// older than that window, is never revisited by either sweep — so without
+// this, a single missed completion webhook can leave a run showing as
+// queued indefinitely, long after GitHub itself resolved it.
+func (p *Poller) pollStaleRuns(ctx context.Context) {
+	if p.skipForRateLimit("stale_runs") {
+		return
+	}
+	staleAfter := p.intervalOrDefault(p.StaleRunReconcileAfter, 3*time.Hour)
+	stale, err := p.Store.ZombieRuns(ctx, staleAfter, p.now())
+	if err != nil {
+		p.logger().Error("poll: failed to list stale runs for reconciliation", "error", err)
+		return
+	}
+
+	for _, r := range stale {
+		owner, repo, ok := strings.Cut(r.Repo, "/")
+		if !ok {
+			p.logger().Error("poll: skipping stale run with malformed repo", "repo", r.Repo, "run_id", r.RunID)
+			continue
+		}
+		run, err := p.Client.GetWorkflowRun(ctx, owner, repo, r.RunID)
+		if err != nil {
+			p.logger().Error("poll: failed to reconcile stale run", "repo", r.Repo, "run_id", r.RunID, "error", err)
+			continue
+		}
+		if run == nil {
+			// GitHub no longer has this run (e.g. deleted): its true state
+			// can't be recovered, so record it as unknown rather than
+			// leaving it stuck as queued/in_progress forever.
+			if err := p.Store.UpsertWorkflowRun(ctx, store.WorkflowRun{
+				RunID:      r.RunID,
+				Repo:       r.Repo,
+				Name:       r.Name,
+				Status:     "unknown",
+				Event:      r.Event,
+				HeadBranch: r.HeadBranch,
+				Source:     "poll",
+				UpdatedAt:  p.now(),
+			}); err != nil {
+				p.logger().Error("poll: failed to store unknown state for missing stale run", "repo", r.Repo, "run_id", r.RunID, "error", err)
+			}
+			continue
+		}
+		if err := p.Store.UpsertWorkflowRun(ctx, toStoreRun(owner, repo, run, p.now())); err != nil {
+			p.logger().Error("poll: failed to store reconciled stale run", "repo", r.Repo, "run_id", r.RunID, "error", err)
 		}
 	}
 }

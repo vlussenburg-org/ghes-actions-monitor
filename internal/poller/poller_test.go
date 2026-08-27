@@ -25,11 +25,14 @@ type fakeGitHubClient struct {
 	runnerGroupsErr  error
 	groupRunners     map[int64][]*github.Runner
 	groupRunnersErr  map[int64]error
+	getRun           map[int64]*github.WorkflowRun // keyed by run ID
+	getRunErr        map[int64]error
 	listReposCalls   int
 	listRunsCalls    int
 	listRecentCalls  int
 	listGroupsCalls  int
 	listRunnersCalls int
+	getRunCalls      []int64
 }
 
 func (f *fakeGitHubClient) ListRepos(ctx context.Context, org string) ([]string, error) {
@@ -72,6 +75,16 @@ func (f *fakeGitHubClient) ListRunnerGroups(ctx context.Context, org string) ([]
 	return f.runnerGroups, nil
 }
 
+func (f *fakeGitHubClient) GetWorkflowRun(ctx context.Context, owner, repo string, runID int64) (*github.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getRunCalls = append(f.getRunCalls, runID)
+	if err, ok := f.getRunErr[runID]; ok {
+		return nil, err
+	}
+	return f.getRun[runID], nil
+}
+
 func (f *fakeGitHubClient) ListRunnerGroupRunners(ctx context.Context, org string, groupID int64) ([]*github.Runner, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -99,6 +112,9 @@ type fakeStore struct {
 	activeReposErr        error
 	activeReposCalls      int
 	activeReposAfterFirst []string
+	zombieRuns            []store.WorkflowRun
+	zombieRunsErr         error
+	zombieRunsCalls       int
 }
 
 func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error {
@@ -162,6 +178,16 @@ func (f *fakeStore) RecentlyActiveRepos(ctx context.Context, since time.Time) ([
 		return f.activeReposAfterFirst, nil
 	}
 	return f.activeRepos, nil
+}
+
+func (f *fakeStore) ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]store.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.zombieRunsCalls++
+	if f.zombieRunsErr != nil {
+		return nil, f.zombieRunsErr
+	}
+	return f.zombieRuns, nil
 }
 
 func strPtr(s string) *string { return &s }
@@ -626,5 +652,130 @@ func TestPoller_PollsWhenNotRateLimited(t *testing.T) {
 
 	if client.listReposCalls == 0 {
 		t.Fatal("expected GitHub calls when not rate limited")
+	}
+}
+
+func TestPollStaleRuns_ReconcilesCompletedRun(t *testing.T) {
+	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	client := &fakeGitHubClient{
+		getRun: map[int64]*github.WorkflowRun{
+			42: {ID: github.Int64(42), Name: strPtr("CI"), Status: strPtr("completed"), Conclusion: strPtr("success"), Event: strPtr("push"), HeadBranch: strPtr("main")},
+		},
+	}
+	st := &fakeStore{
+		zombieRuns: []store.WorkflowRun{
+			{RunID: 42, Repo: "acme/widgets", Name: "CI", Status: "queued", Event: "push", HeadBranch: "main"},
+		},
+	}
+	p := &Poller{Client: client, Store: st, Org: "acme", Now: func() time.Time { return fixedTime }}
+
+	p.pollStaleRuns(context.Background())
+
+	if len(client.getRunCalls) != 1 || client.getRunCalls[0] != 42 {
+		t.Fatalf("expected GetWorkflowRun called once for run 42, got %v", client.getRunCalls)
+	}
+	if len(st.runs) != 1 {
+		t.Fatalf("expected 1 reconciled run stored, got %d", len(st.runs))
+	}
+	got := st.runs[0]
+	if got.RunID != 42 || got.Repo != "acme/widgets" || got.Status != "completed" || got.Conclusion != "success" || got.Source != "poll" {
+		t.Errorf("unexpected reconciled run: %+v", got)
+	}
+	if !got.UpdatedAt.Equal(fixedTime) {
+		t.Errorf("expected fallback time used, got %v", got.UpdatedAt)
+	}
+}
+
+func TestPollStaleRuns_MarksMissingRunAsUnknown(t *testing.T) {
+	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	client := &fakeGitHubClient{
+		getRun: map[int64]*github.WorkflowRun{}, // GetWorkflowRun returns (nil, nil): run no longer exists
+	}
+	st := &fakeStore{
+		zombieRuns: []store.WorkflowRun{
+			{RunID: 7, Repo: "acme/widgets", Name: "CI", Status: "in_progress", Event: "push", HeadBranch: "main"},
+		},
+	}
+	p := &Poller{Client: client, Store: st, Org: "acme", Now: func() time.Time { return fixedTime }}
+
+	p.pollStaleRuns(context.Background())
+
+	if len(st.runs) != 1 {
+		t.Fatalf("expected 1 run stored, got %d", len(st.runs))
+	}
+	got := st.runs[0]
+	if got.RunID != 7 || got.Status != "unknown" || got.Source != "poll" {
+		t.Errorf("expected missing run marked unknown, got %+v", got)
+	}
+	if !got.UpdatedAt.Equal(fixedTime) {
+		t.Errorf("expected fallback time used, got %v", got.UpdatedAt)
+	}
+}
+
+func TestPollStaleRuns_SkipsMalformedRepo(t *testing.T) {
+	client := &fakeGitHubClient{}
+	st := &fakeStore{
+		zombieRuns: []store.WorkflowRun{
+			{RunID: 1, Repo: "no-slash-here", Status: "queued"},
+		},
+	}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollStaleRuns(context.Background()) // should not panic
+
+	if len(client.getRunCalls) != 0 {
+		t.Errorf("expected GetWorkflowRun not called for malformed repo, got %v", client.getRunCalls)
+	}
+	if len(st.runs) != 0 {
+		t.Errorf("expected no runs stored for malformed repo, got %d", len(st.runs))
+	}
+}
+
+func TestPollStaleRuns_PerRunErrorContinues(t *testing.T) {
+	fixedTime := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	client := &fakeGitHubClient{
+		getRunErr: map[int64]error{
+			1: errors.New("rate limited"),
+		},
+		getRun: map[int64]*github.WorkflowRun{
+			2: {ID: github.Int64(2), Status: strPtr("completed"), Conclusion: strPtr("failure")},
+		},
+	}
+	st := &fakeStore{
+		zombieRuns: []store.WorkflowRun{
+			{RunID: 1, Repo: "acme/bad-repo", Status: "queued"},
+			{RunID: 2, Repo: "acme/good-repo", Status: "queued"},
+		},
+	}
+	p := &Poller{Client: client, Store: st, Org: "acme", Now: func() time.Time { return fixedTime }}
+
+	p.pollStaleRuns(context.Background())
+
+	if len(st.runs) != 1 || st.runs[0].RunID != 2 {
+		t.Fatalf("expected only run 2 stored after run 1 errored, got %+v", st.runs)
+	}
+}
+
+func TestPollStaleRuns_ZombieRunsError(t *testing.T) {
+	client := &fakeGitHubClient{}
+	st := &fakeStore{zombieRunsErr: errors.New("db down")}
+	p := &Poller{Client: client, Store: st, Org: "acme"}
+
+	p.pollStaleRuns(context.Background()) // should not panic
+
+	if len(client.getRunCalls) != 0 {
+		t.Errorf("expected no GetWorkflowRun calls when ZombieRuns errors")
+	}
+}
+
+func TestPollStaleRuns_UsesConfiguredStaleAfter(t *testing.T) {
+	client := &fakeGitHubClient{}
+	st := &fakeStore{}
+	p := &Poller{Client: client, Store: st, Org: "acme", StaleRunReconcileAfter: 90 * time.Minute}
+
+	p.pollStaleRuns(context.Background())
+
+	if st.zombieRunsCalls != 1 {
+		t.Fatalf("expected ZombieRuns called once, got %d", st.zombieRunsCalls)
 	}
 }

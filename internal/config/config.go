@@ -68,6 +68,13 @@ type Config struct {
 	// rather than total repo count, since webhooks are the primary source
 	// of truth and REST polling only backstops what they might have missed.
 	WorkflowSpotCheckWindow time.Duration
+	// StaleRunReconcileAfter bounds how long a run may sit as queued or
+	// in_progress before the poller fetches its true current state
+	// directly by run ID (one extra API call per stale run, on the same
+	// cadence as WorkflowPollInterval). Catches runs whose repo has gone
+	// quiet or whose completion webhook was missed, which the spot-check
+	// and history sweeps can never revisit on their own.
+	StaleRunReconcileAfter time.Duration
 
 	// DBPath is the local SQLite database file path.
 	DBPath string
@@ -108,6 +115,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c.WorkflowSpotCheckWindow, err = getEnvDuration("WORKFLOW_SPOT_CHECK_WINDOW", 24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	c.StaleRunReconcileAfter, err = getEnvDuration("STALE_RUN_RECONCILE_AFTER", 3*time.Hour)
 	if err != nil {
 		return Config{}, err
 	}
