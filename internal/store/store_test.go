@@ -78,6 +78,11 @@ func TestQueueDepth(t *testing.T) {
 			t.Fatalf("upsert: %v", err)
 		}
 	}
+	if err := s.RecordQueueDepthSnapshot(ctx, QueueDepthSnapshot{
+		Queued: 99, InProgress: 99, CapturedAt: now,
+	}); err != nil {
+		t.Fatalf("record queue depth snapshot: %v", err)
+	}
 
 	d, err := s.QueueDepth(ctx)
 	if err != nil {
@@ -136,8 +141,8 @@ func TestCloseStaleActiveRuns(t *testing.T) {
 	for _, r := range runs {
 		byID[r.RunID] = r
 	}
-	if byID[1].Status != "stale" || !byID[1].UpdatedAt.Equal(completedAt) {
-		t.Fatalf("expected stale org/a run 1 to be marked stale at %v, got %+v", completedAt, byID[1])
+	if byID[1].Status != "unknown" || !byID[1].UpdatedAt.Equal(completedAt) {
+		t.Fatalf("expected org/a run 1 to be marked unknown at %v, got %+v", completedAt, byID[1])
 	}
 	if byID[2].Status != "queued" {
 		t.Fatalf("expected still-active run 2 to stay queued, got %+v", byID[2])

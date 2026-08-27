@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -19,7 +20,6 @@ import (
 type Store interface {
 	QueueDepth(ctx context.Context) (store.QueueDepth, error)
 	QueueDepthHistory(ctx context.Context, since time.Time) ([]store.QueueDepthSnapshot, error)
-	InFlightCount(ctx context.Context) (int, error)
 	RecentRuns(ctx context.Context, opts store.RecentRunsOptions) ([]store.WorkflowRun, int, error)
 	RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error)
 	CompletedRunOutcomes(ctx context.Context, since time.Time) ([]store.CompletedRunOutcome, error)
@@ -87,8 +87,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// statusResponse is the payload for GET /api/status: the org-wide snapshot
-// of job queue depth, in-flight count, and recent build outcomes.
+// statusResponse is the payload for GET /api/status: the org-wide live queue
+// depth, in-flight count, and recent build outcomes.
 type statusResponse struct {
 	Org            string           `json:"org"`
 	GitHubBaseURL  string           `json:"github_base_url"`
@@ -114,11 +114,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to compute queue depth")
 		return
 	}
-	inFlight, err := s.Store.InFlightCount(ctx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to compute in-flight count")
-		return
-	}
 	outcomes, err := s.Store.RecentOutcomes(ctx, now.Add(-time.Hour))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to compute recent outcomes")
@@ -134,7 +129,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Org:            s.Org,
 		GitHubBaseURL:  s.GitHubBaseURL,
 		QueueDepth:     depth,
-		InFlight:       inFlight,
+		InFlight:       depth.Queued + depth.InProgress,
 		RecentOutcomes: outcomes,
 		ZombieCount:    len(zombies),
 		GeneratedAt:    now,
@@ -240,7 +235,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.RunController.CancelWorkflowRun(r.Context(), request.Repo, runID, request.Force); err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to cancel workflow run: %v", err))
+		writeError(w, upstreamStatus(err), fmt.Sprintf("failed to cancel workflow run: %v", err))
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"cancelled": true, "force": request.Force})
@@ -324,6 +319,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// upstreamStatus reports the client-facing status for an error returned by a
+// RunController. Errors that carry a GitHub REST status code (via a
+// StatusCode() int method) are passed through so the dashboard shows the real
+// reason, e.g. 409 conflict or 403 forbidden. Server-side 5xx responses and
+// transport failures collapse to 502.
+func upstreamStatus(err error) int {
+	var coded interface{ StatusCode() int }
+	if errors.As(err, &coded) {
+		if code := coded.StatusCode(); code >= 400 && code < 500 {
+			return code
+		}
+	}
+	return http.StatusBadGateway
 }
 
 func parsePositiveInt(s string) (int, error) {

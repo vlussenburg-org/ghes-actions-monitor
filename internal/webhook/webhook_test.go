@@ -17,8 +17,12 @@ import (
 )
 
 type fakeStore struct {
-	runs    []store.WorkflowRun
-	failErr error
+	runs          []store.WorkflowRun
+	snapshots     []store.QueueDepthSnapshot
+	queueDepth    store.QueueDepth
+	failErr       error
+	snapshotErr   error
+	queueDepthErr error
 }
 
 func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error {
@@ -26,6 +30,18 @@ func (f *fakeStore) UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) 
 		return f.failErr
 	}
 	f.runs = append(f.runs, r)
+	return nil
+}
+
+func (f *fakeStore) QueueDepth(ctx context.Context) (store.QueueDepth, error) {
+	return f.queueDepth, f.queueDepthErr
+}
+
+func (f *fakeStore) RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error {
+	if f.snapshotErr != nil {
+		return f.snapshotErr
+	}
+	f.snapshots = append(f.snapshots, snap)
 	return nil
 }
 
@@ -94,6 +110,9 @@ func TestServeHTTP_ValidSignature_WorkflowRun(t *testing.T) {
 	}
 	if !got.UpdatedAt.Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Errorf("unexpected updated_at: %v", got.UpdatedAt)
+	}
+	if len(fs.snapshots) != 1 || fs.snapshots[0].Queued != 0 || fs.snapshots[0].InProgress != 0 {
+		t.Errorf("expected one queue-depth snapshot, got %+v", fs.snapshots)
 	}
 }
 

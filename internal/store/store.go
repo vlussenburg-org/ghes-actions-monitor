@@ -120,10 +120,13 @@ func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 	return nil
 }
 
-// CloseStaleActiveRuns marks latest queued/in_progress runs as stale when a
-// successful active-run sweep no longer sees them. This keeps queue depth
-// accurate when a webhook completion delivery was missed, without fetching
-// every completed run on a schedule.
+// CloseStaleActiveRuns marks latest queued/in_progress runs with an
+// "unknown" status when a successful active-run sweep no longer sees them.
+// This keeps queue depth accurate when a webhook completion delivery was
+// missed, without fetching every completed run on a schedule. The run is
+// definitely no longer active on GitHub's side, but its true conclusion is
+// unknown because the completion webhook was never received and this
+// package intentionally avoids extra API calls to look it up.
 func (s *Store) CloseStaleActiveRuns(ctx context.Context, repos []string, activeRunIDs map[int64]struct{}, completedAt time.Time) error {
 	if len(repos) == 0 {
 		return nil
@@ -156,7 +159,7 @@ func (s *Store) CloseStaleActiveRuns(ctx context.Context, repos []string, active
 		if _, stillActive := activeRunIDs[r.RunID]; stillActive {
 			continue
 		}
-		r.Status = "stale"
+		r.Status = "unknown"
 		r.Source = "poll"
 		r.UpdatedAt = completedAt
 		stale = append(stale, r)
@@ -175,7 +178,7 @@ func (s *Store) CloseStaleActiveRuns(ctx context.Context, repos []string, active
 func (s *Store) closeStaleActiveRun(ctx context.Context, runID int64, completedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
-		SELECT run_id, repo, name, 'stale', '', event, head_branch, 'poll', ?
+		SELECT run_id, repo, name, 'unknown', '', event, head_branch, 'poll', ?
 		FROM workflow_runs w1
 		WHERE w1.run_id = ?
 		AND w1.id = (
@@ -184,7 +187,7 @@ func (s *Store) closeStaleActiveRun(ctx context.Context, runID int64, completedA
 		AND w1.status IN ('queued', 'in_progress')`,
 		completedAt, runID)
 	if err != nil {
-		return fmt.Errorf("insert stale workflow run: %w", err)
+		return fmt.Errorf("insert unknown-status workflow run: %w", err)
 	}
 	return nil
 }

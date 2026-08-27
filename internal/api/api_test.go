@@ -18,8 +18,6 @@ type fakeStore struct {
 	queueDepthErr        error
 	queueHistory         []store.QueueDepthSnapshot
 	queueHistErr         error
-	inFlight             int
-	inFlightErr          error
 	outcomes             map[string]int
 	outcomesErr          error
 	completedOutcomes    []store.CompletedRunOutcome
@@ -56,10 +54,6 @@ func (f *fakeStore) QueueDepth(ctx context.Context) (store.QueueDepth, error) {
 func (f *fakeStore) QueueDepthHistory(ctx context.Context, since time.Time) ([]store.QueueDepthSnapshot, error) {
 	f.lastHistorySince = since
 	return f.queueHistory, f.queueHistErr
-}
-
-func (f *fakeStore) InFlightCount(ctx context.Context) (int, error) {
-	return f.inFlight, f.inFlightErr
 }
 
 func (f *fakeStore) RecentRuns(ctx context.Context, opts store.RecentRunsOptions) ([]store.WorkflowRun, int, error) {
@@ -132,11 +126,46 @@ func TestHandleCancelRun_RejectsDifferentOrg(t *testing.T) {
 	}
 }
 
+func TestHandleCancelRun_PassesThroughUpstreamStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"conflict", &codedError{status: http.StatusConflict, msg: "GitHub API 409: Cannot force cancel"}, http.StatusConflict},
+		{"forbidden", &codedError{status: http.StatusForbidden, msg: "GitHub API 403: Resource not accessible"}, http.StatusForbidden},
+		{"upstream 5xx collapses to 502", &codedError{status: http.StatusInternalServerError, msg: "boom"}, http.StatusBadGateway},
+		{"plain error collapses to 502", errors.New("dial tcp: timeout"), http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			controller := &fakeRunController{err: tc.err}
+			s := &Server{Store: &fakeStore{}, RunController: controller, Org: "acme"}
+			req := httptest.NewRequest(http.MethodPost, "/api/runs/42/cancel", strings.NewReader(`{"repo":"acme/widgets","force":true}`))
+			rec := httptest.NewRecorder()
+			s.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.err.Error()) {
+				t.Errorf("body %q does not contain upstream message %q", rec.Body.String(), tc.err.Error())
+			}
+		})
+	}
+}
+
+type codedError struct {
+	status int
+	msg    string
+}
+
+func (e *codedError) Error() string   { return e.msg }
+func (e *codedError) StatusCode() int { return e.status }
+
 func TestHandleStatus_HappyPath(t *testing.T) {
 	fixed := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
 	fs := &fakeStore{
 		queueDepth: store.QueueDepth{Queued: 3, InProgress: 5},
-		inFlight:   8,
 		outcomes:   map[string]int{"success": 10, "failure": 2},
 		zombieRuns: []store.WorkflowRun{{RunID: 1}, {RunID: 2}},
 	}
@@ -170,17 +199,6 @@ func TestHandleStatus_HappyPath(t *testing.T) {
 
 func TestHandleStatus_QueueDepthError(t *testing.T) {
 	fs := &fakeStore{queueDepthErr: errors.New("db down")}
-	s := &Server{Store: fs}
-	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-	rec := httptest.NewRecorder()
-	s.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d", rec.Code)
-	}
-}
-
-func TestHandleStatus_InFlightError(t *testing.T) {
-	fs := &fakeStore{inFlightErr: errors.New("db down")}
 	s := &Server{Store: fs}
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	rec := httptest.NewRecorder()

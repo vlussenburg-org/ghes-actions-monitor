@@ -24,6 +24,8 @@ import (
 // tests to substitute a fake.
 type Store interface {
 	UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error
+	QueueDepth(ctx context.Context) (store.QueueDepth, error)
+	RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error
 }
 
 // Handler receives and processes GitHub org webhook deliveries.
@@ -95,7 +97,8 @@ func (h *Handler) handleWorkflowRun(ctx context.Context, body []byte, w http.Res
 		return
 	}
 
-	updatedAt := h.now()
+	capturedAt := h.now()
+	updatedAt := capturedAt
 	if t, err := time.Parse(time.RFC3339, payload.WorkflowRun.UpdatedAt); err == nil {
 		updatedAt = t
 	}
@@ -114,6 +117,19 @@ func (h *Handler) handleWorkflowRun(ctx context.Context, body []byte, w http.Res
 
 	if err := h.Store.UpsertWorkflowRun(ctx, run); err != nil {
 		h.logger().Error("failed to store workflow run", "error", err, "run_id", run.RunID)
+		http.Error(w, "failed to record event", http.StatusInternalServerError)
+		return
+	}
+	depth, err := h.Store.QueueDepth(ctx)
+	if err != nil {
+		h.logger().Error("failed to compute queue depth after webhook", "error", err)
+		http.Error(w, "failed to record event", http.StatusInternalServerError)
+		return
+	}
+	if err := h.Store.RecordQueueDepthSnapshot(ctx, store.QueueDepthSnapshot{
+		Queued: depth.Queued, InProgress: depth.InProgress, CapturedAt: capturedAt,
+	}); err != nil {
+		h.logger().Error("failed to record queue depth snapshot after webhook", "error", err)
 		http.Error(w, "failed to record event", http.StatusInternalServerError)
 		return
 	}

@@ -2,6 +2,7 @@ package poller
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -268,5 +269,47 @@ func TestGHClientAdapter_CancelWorkflowRun(t *testing.T) {
 	}
 	if got, want := strings.Join(paths, ","), "/repos/acme/widgets/actions/runs/42/cancel,/repos/acme/widgets/actions/runs/43/force-cancel"; got != want {
 		t.Errorf("paths = %q, want %q", got, want)
+	}
+}
+
+func TestGHClientAdapter_CancelWorkflowRun_SurfacesUpstreamError(t *testing.T) {
+	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"message":"Cannot force cancel a workflow run that is not cancelling","errors":[{"message":"run is completed"}]}`))
+	})
+	defer srv.Close()
+
+	err := adapter.CancelWorkflowRun(t.Context(), "acme/widgets", 43, true)
+	if err == nil {
+		t.Fatal("expected error from 409 force-cancel")
+	}
+	var apiErr *GitHubAPIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error %v is not a *GitHubAPIError", err)
+	}
+	if apiErr.StatusCode() != http.StatusConflict {
+		t.Errorf("status = %d, want 409", apiErr.StatusCode())
+	}
+	if !strings.Contains(apiErr.Error(), "Cannot force cancel") || !strings.Contains(apiErr.Error(), "run is completed") {
+		t.Errorf("message %q missing upstream detail", apiErr.Error())
+	}
+}
+
+func TestGHClientAdapter_CancelWorkflowRun_EmptyMessageFallsBackToStatusText(t *testing.T) {
+	adapter, srv := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	defer srv.Close()
+
+	err := adapter.CancelWorkflowRun(t.Context(), "acme/widgets", 43, true)
+	var apiErr *GitHubAPIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error %v is not a *GitHubAPIError", err)
+	}
+	if apiErr.StatusCode() != http.StatusNotFound || !strings.Contains(apiErr.Error(), "Not Found") {
+		t.Errorf("unexpected error: %d %q", apiErr.StatusCode(), apiErr.Error())
 	}
 }

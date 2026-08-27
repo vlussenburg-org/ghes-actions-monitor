@@ -166,7 +166,7 @@
     .status-success, .status-operational, .active-text { color: var(--active); font-weight: 650; }
     .status-failure { color: var(--danger); font-weight: 650; }
     .status-in_progress, .status-queued, .queued-text { color: var(--queued); font-weight: 650; }
-    .status-stale { color: var(--muted); font-weight: 650; }
+    .status-unknown { color: var(--muted); font-weight: 650; }
     .sort-button {
       align-items: center; background: transparent; border: 0; color: inherit;
       cursor: pointer; display: inline-flex; font: inherit; font-weight: inherit;
@@ -364,7 +364,16 @@
 
     async function fetchJSON(path, options) {
       const res = await fetch(path, options);
-      if (!res.ok) throw new Error(`${path} returned ${res.status}`);
+      if (!res.ok) {
+        let detail = '';
+        try {
+          const body = await res.json();
+          if (body && body.error) detail = `: ${body.error}`;
+        } catch (err) {
+          /* non-JSON error body */
+        }
+        throw new Error(`${path} returned ${res.status}${detail}`);
+      }
       return res.json();
     }
 

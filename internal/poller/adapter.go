@@ -41,7 +41,52 @@ func (a *GHClientAdapter) CancelWorkflowRun(ctx context.Context, repo string, ru
 	if errors.As(err, &accepted) {
 		return nil
 	}
-	return err
+	return asGitHubAPIError(err)
+}
+
+// GitHubAPIError carries the upstream GitHub REST status code and message so
+// callers can surface the exact failure instead of a generic error. It
+// deliberately exposes StatusCode() rather than the go-github type, keeping
+// package boundaries interface-driven.
+type GitHubAPIError struct {
+	Status  int
+	Message string
+	Err     error
+}
+
+func (e *GitHubAPIError) Error() string {
+	if e.Message == "" {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("GitHub API %d: %s", e.Status, e.Message)
+}
+
+func (e *GitHubAPIError) StatusCode() int { return e.Status }
+
+func (e *GitHubAPIError) Unwrap() error { return e.Err }
+
+// asGitHubAPIError converts a go-github *ErrorResponse into a GitHubAPIError,
+// preserving the upstream status code and any per-error detail. Other errors
+// (transport failures, context cancellation) pass through unchanged.
+func asGitHubAPIError(err error) error {
+	var resp *github.ErrorResponse
+	if !errors.As(err, &resp) || resp.Response == nil {
+		return err
+	}
+	msg := resp.Message
+	details := make([]string, 0, len(resp.Errors))
+	for _, e := range resp.Errors {
+		if e.Message != "" {
+			details = append(details, e.Message)
+		}
+	}
+	if len(details) > 0 {
+		msg = strings.TrimSpace(msg + " (" + strings.Join(details, "; ") + ")")
+	}
+	if msg == "" {
+		msg = http.StatusText(resp.Response.StatusCode)
+	}
+	return &GitHubAPIError{Status: resp.Response.StatusCode, Message: msg, Err: err}
 }
 
 // ListRepos returns the names (not full_name) of every repo in the org,
