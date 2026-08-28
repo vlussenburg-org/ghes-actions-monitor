@@ -56,11 +56,23 @@ jobs:
   docker:
     name: Docker build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
+      - uses: docker/setup-buildx-action@v3
+
       - name: Build image
-        run: docker build -t ghes-actions-monitor:ci .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: ghes-actions-monitor:ci
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     name: Deploy to Fly.io
