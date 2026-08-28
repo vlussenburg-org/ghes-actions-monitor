@@ -493,6 +493,8 @@
       }
       queueChart.data.datasets[0].data = points.map((p) => ({ x: p.t, y: p.inProgress }));
       queueChart.data.datasets[1].data = points.map((p) => ({ x: p.t, y: p.queued }));
+      const pointRadius = points.length > 180 ? 0 : 3;
+      queueChart.data.datasets.forEach((dataset) => { dataset.pointRadius = pointRadius; });
       queueChart.update();
     }
 
@@ -560,6 +562,7 @@
         });
       }
       failureRateChart.data.datasets[0].data = buckets.map((b) => ({ x: b.t, y: b.rate, total: b.total }));
+      failureRateChart.data.datasets[0].pointRadius = buckets.length > 180 ? 0 : 3;
       failureRateChart.update();
 
       const empty = document.getElementById('failure-rate-empty');
