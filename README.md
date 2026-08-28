@@ -187,3 +187,9 @@ go test ./... -cover
 
 CI (`.github/workflows/ci.yml`) runs the above plus a coverage gate
 (≥80%) and a Docker build on every push/PR.
+
+## Deployment
+
+Pushes to `main` deploy to the Fly.io app configured in `fly.toml` after CI
+passes. Configure the repository secret `FLY_API_TOKEN` with a Fly.io deploy
+token; pull requests run CI but do not deploy.
