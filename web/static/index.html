@@ -435,10 +435,43 @@
       },
     };
 
+    // Keep Chart.js responsive on the longest range without reducing the
+    // detail of short-range views.
+    const maxChartPoints = 600;
+    function chartBucketSize(points) {
+      if (points.length < 2) return 0;
+      const span = points[points.length - 1] - points[0];
+      return span > maxChartPoints * 60000 ? Math.ceil(span / maxChartPoints / 60000) * 60000 : 0;
+    }
+
+    function bucketQueueDepth(history) {
+      const points = (history || [])
+        .map((p) => ({ t: new Date(p.CapturedAt).getTime(), queued: Number(p.Queued) || 0, inProgress: Number(p.InProgress) || 0 }))
+        .filter((p) => Number.isFinite(p.t))
+        .sort((a, b) => a.t - b.t);
+      const bucketSize = chartBucketSize(points.map((p) => p.t));
+      if (!bucketSize) return points;
+
+      const buckets = new Map();
+      for (const point of points) {
+        const bucket = Math.floor(point.t / bucketSize) * bucketSize;
+        const current = buckets.get(bucket) || { t: bucket, queued: 0, inProgress: 0, count: 0 };
+        current.queued += point.queued;
+        current.inProgress += point.inProgress;
+        current.count++;
+        buckets.set(bucket, current);
+      }
+      return [...buckets.values()].map((b) => ({
+        t: b.t + bucketSize / 2,
+        queued: b.queued / b.count,
+        inProgress: b.inProgress / b.count,
+      }));
+    }
+
     let queueChart = null;
     function drawQueueChart(history) {
       const canvas = document.getElementById('queue-chart');
-      const points = (history || []).map((p) => ({ t: new Date(p.CapturedAt).getTime(), queued: p.Queued, inProgress: p.InProgress }));
+      const points = bucketQueueDepth(history);
 
       if (!queueChart) {
         queueChart = new Chart(canvas.getContext('2d'), {
@@ -463,10 +496,15 @@
       queueChart.update();
     }
 
-    // Buckets completed-run outcomes by UTC minute and returns the failure
-    // rate (%) for each minute containing at least one success or failure.
+    // Buckets completed-run outcomes by UTC minute (or a wider interval for
+    // long ranges) and returns the failure rate (%) for each non-empty bucket.
     function bucketFailureRate(outcomes) {
       if (!outcomes || outcomes.length === 0) return [];
+      const timestamps = outcomes
+        .map((o) => new Date(o.CompletedAt).getTime())
+        .filter((t) => Number.isFinite(t))
+        .sort((a, b) => a - b);
+      const bucketSize = chartBucketSize(timestamps) || 60000;
       const buckets = new Map();
       for (const o of outcomes) {
         // Only success/failure define a failure rate. Runs ending as
@@ -476,15 +514,17 @@
         // disconnected segments and, when every bucket is null, renders an
         // empty chart instead of the "no completed runs" message.
         if (o.Conclusion !== 'success' && o.Conclusion !== 'failure') continue;
-        const minute = Math.floor(new Date(o.CompletedAt).getTime() / 60000) * 60000;
-        if (!buckets.has(minute)) buckets.set(minute, { success: 0, failure: 0 });
-        const bucket = buckets.get(minute);
+        const completedAt = new Date(o.CompletedAt).getTime();
+        if (!Number.isFinite(completedAt)) continue;
+        const bucketTime = Math.floor(completedAt / bucketSize) * bucketSize;
+        if (!buckets.has(bucketTime)) buckets.set(bucketTime, { success: 0, failure: 0 });
+        const bucket = buckets.get(bucketTime);
         if (o.Conclusion === 'success') bucket.success++;
         else bucket.failure++;
       }
       return [...buckets.entries()]
         .sort(([a], [b]) => a - b)
-        .map(([t, b]) => ({ t, total: b.success + b.failure, rate: (b.failure / (b.success + b.failure)) * 100 }));
+        .map(([t, b]) => ({ t: t + bucketSize / 2, total: b.success + b.failure, rate: (b.failure / (b.success + b.failure)) * 100 }));
     }
 
     let failureRateChart = null;
