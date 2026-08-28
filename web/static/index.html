@@ -437,7 +437,7 @@
 
     // Keep Chart.js responsive on the longest range without reducing the
     // detail of short-range views.
-    const maxChartPoints = 600;
+    const maxChartPoints = 300;
     function chartBucketSize(points) {
       if (points.length < 2) return 0;
       const span = points[points.length - 1] - points[0];
