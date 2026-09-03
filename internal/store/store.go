@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_run_id ON workflow_runs(run_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_updated_at ON workflow_runs(updated_at);
+-- Covers "latest row per run_id" lookups (SELECT MAX(id) ... WHERE run_id = ?),
+-- used by nearly every query in this package. Without it, that correlated
+-- subquery falls back to a full table scan per run_id as workflow_runs grows
+-- (it's append-only), which serializes badly behind the single writer
+-- connection and can starve webhook upserts until they hit their context
+-- deadline.
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_run_id_id ON workflow_runs(run_id, id);
 
 CREATE TABLE IF NOT EXISTS runner_snapshots (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
