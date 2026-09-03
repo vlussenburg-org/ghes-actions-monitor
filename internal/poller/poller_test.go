@@ -105,9 +105,6 @@ type fakeStore struct {
 	queueDepthErr         error
 	queueDepthSnapErr     error
 	closeStaleErr         error
-	closeConcludedErr     error
-	closeConcludedN       int
-	closeConcludedCalls   int
 	queueDepth            store.QueueDepth
 	closedRepos           []string
 	closedActiveIDs       map[int64]struct{}
@@ -139,16 +136,6 @@ func (f *fakeStore) CloseStaleActiveRuns(ctx context.Context, repos []string, ac
 	f.closedRepos = append([]string(nil), repos...)
 	f.closedActiveIDs = activeRunIDs
 	return nil
-}
-
-func (f *fakeStore) CloseConcludedActiveRuns(ctx context.Context) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.closeConcludedCalls++
-	if f.closeConcludedErr != nil {
-		return 0, f.closeConcludedErr
-	}
-	return f.closeConcludedN, nil
 }
 
 func (f *fakeStore) RecordRunnerSnapshot(ctx context.Context, r store.RunnerSnapshot) error {
@@ -373,34 +360,6 @@ func TestPollWorkflowRuns_CloseStaleErrorDoesNotSkipSnapshot(t *testing.T) {
 
 	if len(st.queueDepthSnaps) != 1 {
 		t.Fatalf("expected queue depth snapshot even when stale close fails, got %d", len(st.queueDepthSnaps))
-	}
-}
-
-func TestPollWorkflowRuns_ClosesConcludedActiveRuns(t *testing.T) {
-	client := &fakeGitHubClient{}
-	st := &fakeStore{activeRepos: []string{"acme/widgets"}, closeConcludedN: 3}
-	p := &Poller{Client: client, Store: st, Org: "acme"}
-
-	p.pollWorkflowRuns(context.Background())
-
-	if st.closeConcludedCalls != 1 {
-		t.Fatalf("expected CloseConcludedActiveRuns to be called once, got %d", st.closeConcludedCalls)
-	}
-}
-
-func TestPollWorkflowRuns_CloseConcludedErrorDoesNotSkipSnapshot(t *testing.T) {
-	client := &fakeGitHubClient{}
-	st := &fakeStore{
-		closeConcludedErr: errors.New("db down"),
-		queueDepth:        store.QueueDepth{Queued: 1},
-		activeRepos:       []string{"acme/widgets"},
-	}
-	p := &Poller{Client: client, Store: st, Org: "acme"}
-
-	p.pollWorkflowRuns(context.Background())
-
-	if len(st.queueDepthSnaps) != 1 {
-		t.Fatalf("expected queue depth snapshot even when concluded close fails, got %d", len(st.queueDepthSnaps))
 	}
 }
 

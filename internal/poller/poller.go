@@ -27,12 +27,6 @@ import (
 type Store interface {
 	UpsertWorkflowRun(ctx context.Context, r store.WorkflowRun) error
 	CloseStaleActiveRuns(ctx context.Context, repos []string, activeRunIDs map[int64]struct{}, completedAt time.Time) error
-	// CloseConcludedActiveRuns repairs runs whose latest recorded state is
-	// still queued/in_progress but already carries a terminal conclusion
-	// (e.g. skipped), which GitHub's active-run list filters can return.
-	// It closes them out from data already held (no API call) and returns
-	// the number repaired.
-	CloseConcludedActiveRuns(ctx context.Context) (int, error)
 	RecordRunnerSnapshot(ctx context.Context, r store.RunnerSnapshot) error
 	QueueDepth(ctx context.Context) (store.QueueDepth, error)
 	RecordQueueDepthSnapshot(ctx context.Context, snap store.QueueDepthSnapshot) error
@@ -244,17 +238,6 @@ func (p *Poller) pollWorkflowRuns(ctx context.Context) {
 	}
 	if err := p.Store.CloseStaleActiveRuns(ctx, scannedRepos, activeRunIDs, p.now()); err != nil {
 		p.logger().Error("poll: failed to close stale active runs", "error", err)
-	}
-
-	// Repair any runs whose latest state still reads queued/in_progress but
-	// already carries a terminal conclusion (e.g. skipped). These are
-	// provably not active — GitHub already gave us the conclusion — so we
-	// close them out from local data with no extra API call, keeping them
-	// out of the queue-depth snapshot recorded just below.
-	if n, err := p.Store.CloseConcludedActiveRuns(ctx); err != nil {
-		p.logger().Error("poll: failed to close concluded active runs", "error", err)
-	} else if n > 0 {
-		p.logger().Info("poll: closed concluded runs still marked active", "count", n)
 	}
 
 	p.recordQueueDepthSnapshot(ctx)
