@@ -23,6 +23,92 @@ func TestOpen_Migrates(t *testing.T) {
 	}
 }
 
+// TestMigrate_CollapsesLegacyAppendOnlyTable verifies that a database still
+// using the old append-only shape (surrogate id, many rows per run_id) is
+// rewritten in place to one row per run, keeping each run's most-recently
+// written state — the same "current state" the old MAX(id) reads derived.
+func TestMigrate_CollapsesLegacyAppendOnlyTable(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Recreate the legacy append-only table over the migrated one.
+	if _, err := s.db.ExecContext(ctx, `
+		DROP TABLE workflow_runs;
+		CREATE TABLE workflow_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			run_id INTEGER NOT NULL,
+			repo TEXT NOT NULL,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL,
+			conclusion TEXT NOT NULL DEFAULT '',
+			event TEXT NOT NULL DEFAULT '',
+			head_branch TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT 'webhook',
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL
+		);`); err != nil {
+		t.Fatalf("recreate legacy table: %v", err)
+	}
+	insertLegacy := func(runID int64, status, conclusion string, updatedAt time.Time) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
+			VALUES (?, 'org/a', 'CI', ?, ?, 'push', 'main', 'webhook', ?)`,
+			runID, status, conclusion, updatedAt); err != nil {
+			t.Fatalf("insert legacy row: %v", err)
+		}
+	}
+	// Run 1: queued -> in_progress -> completed (3 rows); latest is completed.
+	insertLegacy(1, "queued", "", now.Add(-3*time.Hour))
+	insertLegacy(1, "in_progress", "", now.Add(-2*time.Hour))
+	insertLegacy(1, "completed", "success", now.Add(-time.Hour))
+	// Run 2: single queued row.
+	insertLegacy(2, "queued", "", now.Add(-time.Minute))
+
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// The surrogate id column must be gone (one-row-per-run shape).
+	var hasID int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name = 'id'`).Scan(&hasID); err != nil {
+		t.Fatalf("inspect schema: %v", err)
+	}
+	if hasID != 0 {
+		t.Fatalf("expected legacy id column to be dropped after migration")
+	}
+
+	runs, total, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "updated_at", Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 runs after collapse, got %d", total)
+	}
+	byID := map[int64]WorkflowRun{}
+	for _, r := range runs {
+		byID[r.RunID] = r
+	}
+	if byID[1].Status != "completed" || byID[1].Conclusion != "success" || !byID[1].UpdatedAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("expected run 1 collapsed to its latest completed state, got %+v", byID[1])
+	}
+	if byID[2].Status != "queued" {
+		t.Fatalf("expected run 2 to remain queued, got %+v", byID[2])
+	}
+
+	// Migration must be idempotent: a second pass is a no-op.
+	if err := s.migrate(ctx); err != nil {
+		t.Fatalf("migrate (2nd): %v", err)
+	}
+	if _, total, err = s.RecentRuns(ctx, RecentRunsOptions{Limit: 10}); err != nil {
+		t.Fatalf("RecentRuns (2nd): %v", err)
+	} else if total != 2 {
+		t.Fatalf("expected still 2 runs after idempotent re-migrate, got %d", total)
+	}
+}
+
 func TestQueueDepth(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -68,79 +154,6 @@ func TestQueueDepth(t *testing.T) {
 	}
 	if d.Queued != 1 || d.InProgress != 2 {
 		t.Errorf("expected queued=1 in_progress=2, got %+v", d)
-	}
-}
-
-func TestCloseConcludedActiveRuns(t *testing.T) {
-	s := newTestStore(t)
-	ctx := context.Background()
-	now := time.Now().UTC()
-
-	// Simulate legacy backlog rows written before UpsertWorkflowRun
-	// normalized terminal conclusions: latest state still reads
-	// queued/in_progress but a terminal conclusion is already recorded.
-	// Insert raw so we bypass the normalization and reproduce the bug.
-	insertRaw := func(runID int64, repo, status, conclusion string, updatedAt time.Time) {
-		t.Helper()
-		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
-			VALUES (?, ?, 'CI', ?, ?, 'push', 'main', 'webhook', ?)`,
-			runID, repo, status, conclusion, updatedAt); err != nil {
-			t.Fatalf("insert raw: %v", err)
-		}
-	}
-	insertRaw(1, "org/a", "queued", "skipped", now.Add(-time.Hour))
-	insertRaw(2, "org/a", "in_progress", "cancelled", now.Add(-2*time.Hour))
-	// Genuinely still queued (no conclusion yet) — must be left alone.
-	insertRaw(3, "org/a", "queued", "", now.Add(-time.Minute))
-
-	if d, err := s.QueueDepth(ctx); err != nil {
-		t.Fatalf("QueueDepth: %v", err)
-	} else if d.Queued != 2 || d.InProgress != 1 {
-		t.Fatalf("precondition: expected queued=2 in_progress=1, got %+v", d)
-	}
-
-	n, err := s.CloseConcludedActiveRuns(ctx)
-	if err != nil {
-		t.Fatalf("CloseConcludedActiveRuns: %v", err)
-	}
-	if n != 2 {
-		t.Fatalf("expected 2 runs repaired, got %d", n)
-	}
-
-	d, err := s.QueueDepth(ctx)
-	if err != nil {
-		t.Fatalf("QueueDepth: %v", err)
-	}
-	if d.Queued != 1 || d.InProgress != 0 {
-		t.Fatalf("expected only the genuinely-queued run to remain (queued=1 in_progress=0), got %+v", d)
-	}
-
-	// The repaired runs keep their terminal conclusion and true completion
-	// time; only their status is corrected.
-	runs, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "updated_at", Desc: true})
-	if err != nil {
-		t.Fatalf("RecentRuns: %v", err)
-	}
-	byID := map[int64]WorkflowRun{}
-	for _, r := range runs {
-		byID[r.RunID] = r
-	}
-	if byID[1].Status != "completed" || byID[1].Conclusion != "skipped" || !byID[1].UpdatedAt.Equal(now.Add(-time.Hour)) {
-		t.Fatalf("expected run 1 completed/skipped at original time, got %+v", byID[1])
-	}
-	if byID[2].Status != "completed" || byID[2].Conclusion != "cancelled" {
-		t.Fatalf("expected run 2 completed/cancelled, got %+v", byID[2])
-	}
-	if byID[3].Status != "queued" {
-		t.Fatalf("expected genuinely-queued run 3 untouched, got %+v", byID[3])
-	}
-
-	// Idempotent: a second pass finds nothing to repair.
-	if n, err := s.CloseConcludedActiveRuns(ctx); err != nil {
-		t.Fatalf("CloseConcludedActiveRuns (2nd): %v", err)
-	} else if n != 0 {
-		t.Fatalf("expected 0 runs repaired on second pass, got %d", n)
 	}
 }
 
@@ -306,8 +319,8 @@ func TestRecentOutcomes_DedupesRepeatedPollsOfSameRun(t *testing.T) {
 	since := now.Add(-time.Hour)
 
 	// Simulate the same run being re-recorded across multiple poll/refresh
-	// sweeps (e.g. force-refresh clicked repeatedly): each sweep inserts a
-	// new row for the same run_id, but it must only be counted once.
+	// sweeps (e.g. force-refresh clicked repeatedly): each sweep upserts the
+	// same run_id in place, so it must only be counted once.
 	for i := 0; i < 3; i++ {
 		if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
 			RunID: 1, Repo: "org/a", Status: "completed", Conclusion: "failure",

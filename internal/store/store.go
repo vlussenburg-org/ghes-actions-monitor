@@ -72,9 +72,14 @@ func (s *Store) Close() error {
 }
 
 const schema = `
+-- One row per workflow run (keyed by GitHub's run_id, updated in place). The
+-- table therefore holds only current state, not a per-transition history, so
+-- reads never have to scan the whole table and deduplicate to find each run's
+-- latest row — the row IS the latest state. This is what keeps the dashboard's
+-- queries from scanning an ever-growing append-only log and starving webhook
+-- writes under load.
 CREATE TABLE IF NOT EXISTS workflow_runs (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	run_id INTEGER NOT NULL,
+	run_id INTEGER PRIMARY KEY,
 	repo TEXT NOT NULL,
 	name TEXT NOT NULL,
 	status TEXT NOT NULL,
@@ -82,18 +87,16 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 	event TEXT NOT NULL DEFAULT '',
 	head_branch TEXT NOT NULL DEFAULT '',
 	source TEXT NOT NULL DEFAULT 'webhook',
-	updated_at DATETIME NOT NULL,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	updated_at DATETIME NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_workflow_runs_run_id ON workflow_runs(run_id);
+-- (status, updated_at) lets the current-state reads jump straight to the rows
+-- they need as a bounded index range instead of scanning the table:
+-- QueueDepth (status IN (...)), ZombieRuns (status IN (...) AND updated_at<=?),
+-- and the completed-outcomes window (status='completed' AND updated_at>=?).
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status_updated ON workflow_runs(status, updated_at);
+-- (updated_at) serves the recent-runs list (ORDER BY updated_at ... LIMIT n)
+-- and RecentlyActiveRepos (updated_at >= ?) without a full scan.
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_updated_at ON workflow_runs(updated_at);
--- Covers "latest row per run_id" lookups (SELECT MAX(id) ... WHERE run_id = ?),
--- used by nearly every query in this package. Without it, that correlated
--- subquery falls back to a full table scan per run_id as workflow_runs grows
--- (it's append-only), which serializes badly behind the single writer
--- connection and can starve webhook upserts until they hit their context
--- deadline.
-CREATE INDEX IF NOT EXISTS idx_workflow_runs_run_id_id ON workflow_runs(run_id, id);
 
 CREATE TABLE IF NOT EXISTS runner_snapshots (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,9 +118,67 @@ CREATE INDEX IF NOT EXISTS idx_queue_depth_snapshots_captured_at ON queue_depth_
 `
 
 func (s *Store) migrate(ctx context.Context) error {
+	// Legacy databases stored workflow_runs as an append-only log keyed by a
+	// surrogate "id" (one row per state transition), which forced every read
+	// to scan the whole table and dedupe to the latest row per run. Collapse
+	// any such table to one row per run before applying the current schema.
+	// This is a no-op on fresh or already-migrated databases.
+	if err := s.collapseLegacyWorkflowRuns(ctx); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, schema)
 	if err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
+	}
+	return nil
+}
+
+// collapseLegacyWorkflowRuns rewrites an append-only workflow_runs table (the
+// old shape, identified by its surrogate "id" column) into the current
+// one-row-per-run shape, keeping each run's most-recently-recorded row — the
+// highest id, i.e. the last write, which is exactly the "current state" every
+// reader derived before. It runs once, in a single transaction so a crash
+// can't leave a half-migrated table, and is a no-op when workflow_runs is
+// absent (fresh DB) or already keyed by run_id.
+func (s *Store) collapseLegacyWorkflowRuns(ctx context.Context) error {
+	var legacy int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name = 'id'`).Scan(&legacy); err != nil {
+		return fmt.Errorf("inspect workflow_runs schema: %w", err)
+	}
+	if legacy == 0 {
+		return nil
+	}
+
+	const rebuild = `
+CREATE TABLE workflow_runs_current (
+	run_id INTEGER PRIMARY KEY,
+	repo TEXT NOT NULL,
+	name TEXT NOT NULL,
+	status TEXT NOT NULL,
+	conclusion TEXT NOT NULL DEFAULT '',
+	event TEXT NOT NULL DEFAULT '',
+	head_branch TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT 'webhook',
+	updated_at DATETIME NOT NULL
+);
+INSERT INTO workflow_runs_current (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
+SELECT run_id, repo, name, status, conclusion, event, head_branch, source, updated_at
+FROM workflow_runs w1
+WHERE w1.id = (SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id);
+DROP TABLE workflow_runs;
+ALTER TABLE workflow_runs_current RENAME TO workflow_runs;`
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin workflow_runs migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, rebuild); err != nil {
+		return fmt.Errorf("collapse workflow_runs to one row per run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit workflow_runs migration: %w", err)
 	}
 	return nil
 }
@@ -136,9 +197,12 @@ type WorkflowRun struct {
 	UpdatedAt  time.Time
 }
 
-// UpsertWorkflowRun records a new state for a workflow run. It always inserts
-// a new row so history is preserved; callers query the latest row per run_id
-// for "current" state.
+// UpsertWorkflowRun records the current state for a workflow run. The table
+// holds one row per run_id (updated in place), so this inserts on first sight
+// and overwrites on every subsequent state change — last write wins, which is
+// the same "latest state" semantics readers relied on when the table was an
+// append-only log. Callers read the row directly for current state; there is
+// no per-transition history to dedupe.
 func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 	if r.Source == "" {
 		r.Source = "webhook"
@@ -155,7 +219,16 @@ func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(run_id) DO UPDATE SET
+			repo = excluded.repo,
+			name = excluded.name,
+			status = excluded.status,
+			conclusion = excluded.conclusion,
+			event = excluded.event,
+			head_branch = excluded.head_branch,
+			source = excluded.source,
+			updated_at = excluded.updated_at`,
 		r.RunID, r.Repo, r.Name, r.Status, r.Conclusion, r.Event, r.HeadBranch, r.Source, r.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert workflow run: %w", err)
@@ -181,12 +254,9 @@ func (s *Store) CloseStaleActiveRuns(ctx context.Context, repos []string, active
 	}
 	query := fmt.Sprintf(`
 		SELECT run_id, repo, name, event, head_branch
-		FROM workflow_runs w1
-		WHERE w1.id = (
-			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-		)
-		AND w1.status IN ('queued', 'in_progress')
-		AND w1.repo IN (%s)`, placeholders)
+		FROM workflow_runs
+		WHERE status IN ('queued', 'in_progress')
+		AND repo IN (%s)`, placeholders)
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query stale active runs: %w", err)
@@ -220,53 +290,14 @@ func (s *Store) CloseStaleActiveRuns(ctx context.Context, repos []string, active
 
 func (s *Store) closeStaleActiveRun(ctx context.Context, runID int64, completedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
-		SELECT run_id, repo, name, 'unknown', '', event, head_branch, 'poll', ?
-		FROM workflow_runs w1
-		WHERE w1.run_id = ?
-		AND w1.id = (
-			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-		)
-		AND w1.status IN ('queued', 'in_progress')`,
+		UPDATE workflow_runs
+		SET status = 'unknown', conclusion = '', source = 'poll', updated_at = ?
+		WHERE run_id = ? AND status IN ('queued', 'in_progress')`,
 		completedAt, runID)
 	if err != nil {
-		return fmt.Errorf("insert unknown-status workflow run: %w", err)
+		return fmt.Errorf("mark workflow run unknown: %w", err)
 	}
 	return nil
-}
-
-// CloseConcludedActiveRuns repairs runs whose most recent recorded state
-// still reads queued/in_progress but already carries a terminal conclusion
-// (e.g. skipped). GitHub's ?status=queued / ?status=in_progress list filters
-// can return such runs, and any records written before ingestion normalized
-// them (see UpsertWorkflowRun) leave the run counted as active in QueueDepth
-// indefinitely — the "queued runs that aren't actually queued" symptom.
-//
-// This closes them out deterministically from data already held (the
-// conclusion GitHub gave us), with no API call, by appending one corrected
-// row per affected run. The store is append-only, so the new completed row
-// becomes the run's latest state; the original conclusion and updated_at are
-// preserved so outcome/history views place the completion at its true time.
-// It is idempotent: once corrected, a run's latest row is completed and no
-// longer matches. Returns the number of runs repaired.
-func (s *Store) CloseConcludedActiveRuns(ctx context.Context) (int, error) {
-	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
-		SELECT run_id, repo, name, 'completed', conclusion, event, head_branch, 'reconcile', updated_at
-		FROM workflow_runs w1
-		WHERE w1.id = (
-			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-		)
-		AND w1.status IN ('queued', 'in_progress')
-		AND w1.conclusion <> ''`)
-	if err != nil {
-		return 0, fmt.Errorf("close concluded active runs: %w", err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("count closed concluded active runs: %w", err)
-	}
-	return int(n), nil
 }
 
 // QueueDepth reports how many distinct runs are currently queued (waiting
@@ -281,14 +312,9 @@ type QueueDepth struct {
 // QueueDepth computes the current queue depth across the org.
 func (s *Store) QueueDepth(ctx context.Context) (QueueDepth, error) {
 	const q = `
-		SELECT latest.status, COUNT(*) FROM (
-			SELECT run_id, status FROM workflow_runs w1
-			WHERE w1.id = (
-				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-			)
-		) latest
-		WHERE latest.status IN ('queued', 'in_progress')
-		GROUP BY latest.status`
+		SELECT status, COUNT(*) FROM workflow_runs
+		WHERE status IN ('queued', 'in_progress')
+		GROUP BY status`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
 		return QueueDepth{}, fmt.Errorf("query queue depth: %w", err)
@@ -346,13 +372,8 @@ func (s *Store) RecentlyActiveRepos(ctx context.Context, since time.Time) ([]str
 // sweep and would otherwise inflate the count with duplicates.
 func (s *Store) RecentOutcomes(ctx context.Context, since time.Time) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT conclusion, COUNT(*) FROM (
-			SELECT run_id, conclusion, status, updated_at FROM workflow_runs w1
-			WHERE w1.id = (
-				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-			)
-		) latest
-		WHERE latest.status = 'completed' AND latest.conclusion <> '' AND latest.updated_at >= ?
+		SELECT conclusion, COUNT(*) FROM workflow_runs
+		WHERE status = 'completed' AND conclusion <> '' AND updated_at >= ?
 		GROUP BY conclusion`, since)
 	if err != nil {
 		return nil, fmt.Errorf("query recent outcomes: %w", err)
@@ -386,14 +407,9 @@ type CompletedRunOutcome struct {
 // double-counted.
 func (s *Store) CompletedRunOutcomes(ctx context.Context, since time.Time) ([]CompletedRunOutcome, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT conclusion, updated_at FROM (
-			SELECT run_id, conclusion, status, updated_at FROM workflow_runs w1
-			WHERE w1.id = (
-				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-			)
-		) latest
-		WHERE latest.status = 'completed' AND latest.conclusion <> '' AND latest.updated_at >= ?
-		ORDER BY latest.updated_at ASC`, since)
+		SELECT conclusion, updated_at FROM workflow_runs
+		WHERE status = 'completed' AND conclusion <> '' AND updated_at >= ?
+		ORDER BY updated_at ASC`, since)
 	if err != nil {
 		return nil, fmt.Errorf("query completed run outcomes: %w", err)
 	}
@@ -439,13 +455,12 @@ func statusFilterSQL(status string) string {
 	if status == "" {
 		return ""
 	}
-	return " AND w1.status = ?"
+	return " WHERE status = ?"
 }
 
 // RecentRuns returns the most recently updated workflow run states, paginated
-// and sorted per opts, plus the total distinct-run count (for computing
-// page counts). Dedupes to each run's latest recorded state (by run_id) —
-// otherwise repeated polls of the same run would appear multiple times.
+// and sorted per opts, plus the total run count (for computing page counts).
+// The table holds one row per run, so each run appears exactly once.
 func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]WorkflowRun, int, error) {
 	col, ok := recentRunsSortColumns[opts.SortBy]
 	if !ok {
@@ -461,16 +476,10 @@ func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]Workf
 	}
 
 	var total int
-	totalQuery := `
-		SELECT COUNT(*) FROM (
-			SELECT run_id, status FROM workflow_runs w1
-			WHERE w1.id = (
-				SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-			)
-		) latest`
+	totalQuery := `SELECT COUNT(*) FROM workflow_runs`
 	var totalArgs []any
 	if status != "" {
-		totalQuery += ` WHERE latest.status = ?`
+		totalQuery += ` WHERE status = ?`
 		totalArgs = append(totalArgs, status)
 	}
 	if err := s.db.QueryRowContext(ctx, totalQuery, totalArgs...).Scan(&total); err != nil {
@@ -480,11 +489,8 @@ func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]Workf
 	// col/dir are whitelisted above, safe to interpolate.
 	query := fmt.Sprintf(`
 		SELECT run_id, repo, name, status, conclusion, event, head_branch, source, updated_at
-		FROM workflow_runs w1
-		WHERE w1.id = (
-			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-		)%s
-		ORDER BY %s %s, id DESC
+		FROM workflow_runs%s
+		ORDER BY %s %s, run_id DESC
 		LIMIT ? OFFSET ?`, statusFilterSQL(status), col, dir)
 	args := []any{}
 	if status != "" {
@@ -511,20 +517,16 @@ func (s *Store) RecentRuns(ctx context.Context, opts RecentRunsOptions) ([]Workf
 	return out, total, nil
 }
 
-// ZombieRuns returns workflow runs whose most recent recorded state is
-// still "queued" or "in_progress" but hasn't been updated in over
-// staleAfter — i.e. runs that are likely stuck (no runner picked them up,
-// or a job hung and GitHub never sent a completion event). Ordered oldest
-// (most stale) first.
+// ZombieRuns returns workflow runs whose current state is still "queued" or
+// "in_progress" but hasn't been updated in over staleAfter — i.e. runs that
+// are likely stuck (no runner picked them up, or a job hung and GitHub never
+// sent a completion event). Ordered oldest (most stale) first.
 func (s *Store) ZombieRuns(ctx context.Context, staleAfter time.Duration, now time.Time) ([]WorkflowRun, error) {
 	cutoff := now.Add(-staleAfter)
 	const q = `
 		SELECT run_id, repo, name, status, conclusion, event, head_branch, source, updated_at
-		FROM workflow_runs w1
-		WHERE w1.id = (
-			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
-		)
-		AND status IN ('queued', 'in_progress')
+		FROM workflow_runs
+		WHERE status IN ('queued', 'in_progress')
 		AND updated_at <= ?
 		ORDER BY updated_at ASC`
 	rows, err := s.db.QueryContext(ctx, q, cutoff)
