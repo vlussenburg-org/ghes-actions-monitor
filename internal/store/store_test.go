@@ -71,6 +71,79 @@ func TestQueueDepth(t *testing.T) {
 	}
 }
 
+func TestCloseConcludedActiveRuns(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Simulate legacy backlog rows written before UpsertWorkflowRun
+	// normalized terminal conclusions: latest state still reads
+	// queued/in_progress but a terminal conclusion is already recorded.
+	// Insert raw so we bypass the normalization and reproduce the bug.
+	insertRaw := func(runID int64, repo, status, conclusion string, updatedAt time.Time) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, `
+			INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
+			VALUES (?, ?, 'CI', ?, ?, 'push', 'main', 'webhook', ?)`,
+			runID, repo, status, conclusion, updatedAt); err != nil {
+			t.Fatalf("insert raw: %v", err)
+		}
+	}
+	insertRaw(1, "org/a", "queued", "skipped", now.Add(-time.Hour))
+	insertRaw(2, "org/a", "in_progress", "cancelled", now.Add(-2*time.Hour))
+	// Genuinely still queued (no conclusion yet) — must be left alone.
+	insertRaw(3, "org/a", "queued", "", now.Add(-time.Minute))
+
+	if d, err := s.QueueDepth(ctx); err != nil {
+		t.Fatalf("QueueDepth: %v", err)
+	} else if d.Queued != 2 || d.InProgress != 1 {
+		t.Fatalf("precondition: expected queued=2 in_progress=1, got %+v", d)
+	}
+
+	n, err := s.CloseConcludedActiveRuns(ctx)
+	if err != nil {
+		t.Fatalf("CloseConcludedActiveRuns: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 runs repaired, got %d", n)
+	}
+
+	d, err := s.QueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("QueueDepth: %v", err)
+	}
+	if d.Queued != 1 || d.InProgress != 0 {
+		t.Fatalf("expected only the genuinely-queued run to remain (queued=1 in_progress=0), got %+v", d)
+	}
+
+	// The repaired runs keep their terminal conclusion and true completion
+	// time; only their status is corrected.
+	runs, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, SortBy: "updated_at", Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	byID := map[int64]WorkflowRun{}
+	for _, r := range runs {
+		byID[r.RunID] = r
+	}
+	if byID[1].Status != "completed" || byID[1].Conclusion != "skipped" || !byID[1].UpdatedAt.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("expected run 1 completed/skipped at original time, got %+v", byID[1])
+	}
+	if byID[2].Status != "completed" || byID[2].Conclusion != "cancelled" {
+		t.Fatalf("expected run 2 completed/cancelled, got %+v", byID[2])
+	}
+	if byID[3].Status != "queued" {
+		t.Fatalf("expected genuinely-queued run 3 untouched, got %+v", byID[3])
+	}
+
+	// Idempotent: a second pass finds nothing to repair.
+	if n, err := s.CloseConcludedActiveRuns(ctx); err != nil {
+		t.Fatalf("CloseConcludedActiveRuns (2nd): %v", err)
+	} else if n != 0 {
+		t.Fatalf("expected 0 runs repaired on second pass, got %d", n)
+	}
+}
+
 func TestCloseStaleActiveRuns(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
