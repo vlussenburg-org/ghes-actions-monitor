@@ -235,6 +235,40 @@ func (s *Store) closeStaleActiveRun(ctx context.Context, runID int64, completedA
 	return nil
 }
 
+// CloseConcludedActiveRuns repairs runs whose most recent recorded state
+// still reads queued/in_progress but already carries a terminal conclusion
+// (e.g. skipped). GitHub's ?status=queued / ?status=in_progress list filters
+// can return such runs, and any records written before ingestion normalized
+// them (see UpsertWorkflowRun) leave the run counted as active in QueueDepth
+// indefinitely — the "queued runs that aren't actually queued" symptom.
+//
+// This closes them out deterministically from data already held (the
+// conclusion GitHub gave us), with no API call, by appending one corrected
+// row per affected run. The store is append-only, so the new completed row
+// becomes the run's latest state; the original conclusion and updated_at are
+// preserved so outcome/history views place the completion at its true time.
+// It is idempotent: once corrected, a run's latest row is completed and no
+// longer matches. Returns the number of runs repaired.
+func (s *Store) CloseConcludedActiveRuns(ctx context.Context) (int, error) {
+	result, err := s.db.ExecContext(ctx, `
+		INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
+		SELECT run_id, repo, name, 'completed', conclusion, event, head_branch, 'reconcile', updated_at
+		FROM workflow_runs w1
+		WHERE w1.id = (
+			SELECT MAX(w2.id) FROM workflow_runs w2 WHERE w2.run_id = w1.run_id
+		)
+		AND w1.status IN ('queued', 'in_progress')
+		AND w1.conclusion <> ''`)
+	if err != nil {
+		return 0, fmt.Errorf("close concluded active runs: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count closed concluded active runs: %w", err)
+	}
+	return int(n), nil
+}
+
 // QueueDepth reports how many distinct runs are currently queued (waiting
 // for a runner) versus already in progress, based on each run's most recent
 // recorded state. This is the primary "queue depth" signal for the
