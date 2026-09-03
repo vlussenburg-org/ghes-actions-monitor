@@ -151,6 +151,38 @@ func TestCloseStaleActiveRun_DoesNotOverwriteConcurrentCompletion(t *testing.T) 
 	}
 }
 
+func TestQueueDepth_SkippedWithStaleStatusNotCountedActive(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// GitHub's ?status=queued / ?status=in_progress list filters can return
+	// runs whose status field still reads queued/in_progress while a terminal
+	// conclusion (e.g. skipped) is already set. These must not be counted as
+	// active.
+	runs := []WorkflowRun{
+		{RunID: 1, Repo: "org/a", Status: "queued", Conclusion: "skipped", Source: "poll", UpdatedAt: now},
+		{RunID: 2, Repo: "org/a", Status: "in_progress", Conclusion: "skipped", Source: "poll", UpdatedAt: now},
+		{RunID: 3, Repo: "org/a", Status: "queued", UpdatedAt: now},
+	}
+	for _, r := range runs {
+		if err := s.UpsertWorkflowRun(ctx, r); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+
+	d, err := s.QueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("QueueDepth: %v", err)
+	}
+	if d.Queued != 1 {
+		t.Errorf("expected 1 queued (only the genuinely-queued run), got %d", d.Queued)
+	}
+	if d.InProgress != 0 {
+		t.Errorf("expected 0 in progress, got %d", d.InProgress)
+	}
+}
+
 func TestQueueDepth_Empty(t *testing.T) {
 	s := newTestStore(t)
 	d, err := s.QueueDepth(context.Background())

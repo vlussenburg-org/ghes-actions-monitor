@@ -143,6 +143,16 @@ func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 	if r.Source == "" {
 		r.Source = "webhook"
 	}
+	// A run with a terminal conclusion is completed by definition — GitHub
+	// only populates conclusion once a run reaches a terminal state. However,
+	// the ?status=queued / ?status=in_progress list filters can return runs
+	// (notably skipped ones) whose status field still reads queued/in_progress
+	// while conclusion is already set. Recording those verbatim leaves them
+	// counted as active in QueueDepth forever. Normalize so they can never
+	// inflate queue depth regardless of ingestion source.
+	if r.Conclusion != "" && r.Status != "completed" {
+		r.Status = "completed"
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO workflow_runs (run_id, repo, name, status, conclusion, event, head_branch, source, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
