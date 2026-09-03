@@ -23,14 +23,40 @@ type Store struct {
 
 // Open opens (creating if necessary) the SQLite database at path and applies
 // the schema migrations. Use ":memory:" for ephemeral/test databases.
-func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+// maxOpenConns bounds the connection pool for file-backed databases (ignored
+// for ":memory:", which always uses exactly one connection); pass <= 0 to
+// use the default of 8.
+func Open(path string, maxOpenConns int) (*Store, error) {
+	db, err := sql.Open("sqlite", path+
+		"?_pragma=busy_timeout(5000)"+
+		"&_pragma=journal_mode(WAL)"+
+		// NORMAL is safe (and standard practice) in WAL mode: only a
+		// checkpoint can lose the last few commits on power loss, not
+		// corrupt the database, and it avoids an fsync on every commit.
+		"&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-	// SQLite via database/sql performs best with a single writer connection;
-	// this avoids "database is locked" errors under concurrent pollers.
-	db.SetMaxOpenConns(1)
+	if path == ":memory:" {
+		// An in-memory database only exists within the connection that
+		// created it, so a pool of more than one connection would each
+		// see an independent, empty database. Ephemeral/test use stays
+		// on a single connection; real (file-backed) use gets the pool
+		// below.
+		db.SetMaxOpenConns(1)
+	} else {
+		if maxOpenConns <= 0 {
+			maxOpenConns = 8
+		}
+		// WAL mode allows any number of concurrent readers alongside a
+		// single writer, so — unlike the previous single-connection
+		// pool — read-heavy dashboard queries no longer need to queue
+		// behind (or block) webhook/poller writes. SQLite itself still
+		// serializes the one writer at a time; busy_timeout above
+		// handles that contention instead of failing with "database is
+		// locked".
+		db.SetMaxOpenConns(maxOpenConns)
+	}
 
 	s := &Store{db: db}
 	if err := s.migrate(context.Background()); err != nil {

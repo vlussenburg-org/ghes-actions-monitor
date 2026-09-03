@@ -44,7 +44,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	st, err := store.Open(cfg.DBPath)
+	st, err := store.Open(cfg.DBPath, cfg.DBMaxOpenConns)
 	if err != nil {
 		return err
 	}

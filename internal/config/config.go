@@ -84,6 +84,13 @@ type Config struct {
 
 	// DBPath is the local SQLite database file path.
 	DBPath string
+	// DBMaxOpenConns bounds the SQLite connection pool for file-backed
+	// databases. WAL mode (always enabled) allows multiple concurrent
+	// readers alongside a single writer, so this can safely be >1;
+	// SQLite itself serializes the writer and busy_timeout handles that
+	// contention. Ignored for the ":memory:" test database, which is
+	// always forced to a single connection. Defaults to 8.
+	DBMaxOpenConns int
 }
 
 // Load reads configuration from environment variables, applying sane
@@ -103,6 +110,11 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	c.DBMaxOpenConns, err = getEnvInt("DB_MAX_OPEN_CONNS", 8)
+	if err != nil {
+		return Config{}, err
+	}
+
 	c.AppID, err = getEnvInt64("GITHUB_APP_ID", 0)
 	if err != nil {
 		return Config{}, err
@@ -149,6 +161,9 @@ func (c Config) Validate() error {
 	}
 	if (c.AuthUsername == "") != (c.AuthToken == "") {
 		return fmt.Errorf("AUTH_USERNAME and AUTH_TOKEN must both be set, or both left unset")
+	}
+	if c.DBMaxOpenConns < 1 {
+		return fmt.Errorf("DB_MAX_OPEN_CONNS must be at least 1")
 	}
 	return nil
 }
@@ -214,6 +229,18 @@ func getEnvInt64(key string, def int64) (int64, error) {
 		return def, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return n, nil
+}
+
+func getEnvInt(key string, def int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
 	if err != nil {
 		return 0, fmt.Errorf("invalid %s: %w", key, err)
 	}
