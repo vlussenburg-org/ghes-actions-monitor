@@ -237,6 +237,110 @@ func TestCloseStaleActiveRun_DoesNotOverwriteConcurrentCompletion(t *testing.T) 
 	}
 }
 
+// A poll sweep observes GitHub at one instant but writes its results some time
+// later, so a sweep that listed a run as still active can land after the
+// completion webhook for that same run. Recording it verbatim would overwrite
+// the terminal state and put a finished run back into the active queue-depth
+// count until the next sweep happened to correct it.
+func TestUpsertWorkflowRun_StaleActiveWriteDoesNotResurrectCompletedRun(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	observed := time.Now().UTC()          // poller listed the run as in_progress here
+	finished := observed.Add(time.Minute) // GitHub completed it afterwards
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "completed",
+		Conclusion: "success", Source: "webhook", UpdatedAt: finished,
+	}); err != nil {
+		t.Fatalf("upsert completion: %v", err)
+	}
+	// The in-flight sweep now writes what it saw before the completion.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "in_progress",
+		Source: "poll", UpdatedAt: observed,
+	}); err != nil {
+		t.Fatalf("upsert stale observation: %v", err)
+	}
+
+	depth, err := s.QueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("QueueDepth: %v", err)
+	}
+	if depth.InProgress != 0 || depth.Queued != 0 {
+		t.Errorf("stale write resurrected a completed run: queued=%d in_progress=%d", depth.Queued, depth.InProgress)
+	}
+	runs, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "completed" || runs[0].Conclusion != "success" {
+		t.Errorf("completion should remain latest state, got %+v", runs)
+	}
+}
+
+// CloseStaleActiveRuns records the time it observed a run was gone, not
+// GitHub's (earlier) updated_at, so the "unknown" row it writes always carries
+// a newer timestamp than the delayed completion webhook that explains it. That
+// webhook still has to win, otherwise a run whose delivery was merely late is
+// stuck reporting "unknown" forever.
+func TestUpsertWorkflowRun_LateCompletionOverridesUnknownClose(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	completedAt := time.Now().UTC()
+	closedAt := completedAt.Add(time.Minute)
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "in_progress", UpdatedAt: completedAt.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("upsert active: %v", err)
+	}
+	if err := s.closeStaleActiveRun(ctx, 1, closedAt); err != nil {
+		t.Fatalf("closeStaleActiveRun: %v", err)
+	}
+	// The completion webhook finally arrives, carrying GitHub's older timestamp.
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "completed",
+		Conclusion: "failure", Source: "webhook", UpdatedAt: completedAt,
+	}); err != nil {
+		t.Fatalf("upsert late completion: %v", err)
+	}
+
+	runs, _, err := s.RecentRuns(ctx, RecentRunsOptions{Limit: 10, Desc: true})
+	if err != nil {
+		t.Fatalf("RecentRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != "completed" || runs[0].Conclusion != "failure" {
+		t.Errorf("late completion should replace the unknown close, got %+v", runs)
+	}
+}
+
+// Repeated polls of an unchanged active run carry the same updated_at, and
+// must stay idempotent rather than being rejected as stale.
+func TestUpsertWorkflowRun_RepeatedPollOfUnchangedActiveRunStillApplies(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "queued", Source: "webhook", UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert queued: %v", err)
+	}
+	if err := s.UpsertWorkflowRun(ctx, WorkflowRun{
+		RunID: 1, Repo: "org/a", Name: "CI", Status: "in_progress", Source: "poll", UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+
+	depth, err := s.QueueDepth(ctx)
+	if err != nil {
+		t.Fatalf("QueueDepth: %v", err)
+	}
+	if depth.InProgress != 1 || depth.Queued != 0 {
+		t.Errorf("expected the run to advance to in_progress, got queued=%d in_progress=%d", depth.Queued, depth.InProgress)
+	}
+}
+
 func TestQueueDepth_SkippedWithStaleStatusNotCountedActive(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

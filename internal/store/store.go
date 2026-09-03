@@ -107,6 +107,10 @@ CREATE TABLE IF NOT EXISTS runner_snapshots (
 	captured_at DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runner_snapshots_captured_at ON runner_snapshots(captured_at);
+-- (group_name, id) serves LatestRunnerSnapshots: without it, finding the newest
+-- snapshot per group scans the whole table, which grows unbounded (one row per
+-- group per poll, forever) while the dashboard re-reads it every 10s.
+CREATE INDEX IF NOT EXISTS idx_runner_snapshots_group_id ON runner_snapshots(group_name, id);
 
 CREATE TABLE IF NOT EXISTS queue_depth_snapshots (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,10 +203,15 @@ type WorkflowRun struct {
 
 // UpsertWorkflowRun records the current state for a workflow run. The table
 // holds one row per run_id (updated in place), so this inserts on first sight
-// and overwrites on every subsequent state change — last write wins, which is
-// the same "latest state" semantics readers relied on when the table was an
-// append-only log. Callers read the row directly for current state; there is
-// no per-transition history to dedupe.
+// and updates on every subsequent state change. Callers read the row directly
+// for current state; there is no per-transition history to dedupe.
+//
+// Writes are not blindly last-write-wins, because writers observe GitHub at
+// different times and finish out of order: a poll sweep that listed a run as
+// in_progress can land after the completion webhook for that same run, and
+// would otherwise overwrite the terminal state and resurrect a finished run
+// into the active queue-depth count. The conflict clause therefore drops
+// writes that would move a run backwards — see workflowRunUpsertGuard.
 func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 	if r.Source == "" {
 		r.Source = "webhook"
@@ -228,13 +237,37 @@ func (s *Store) UpsertWorkflowRun(ctx context.Context, r WorkflowRun) error {
 			event = excluded.event,
 			head_branch = excluded.head_branch,
 			source = excluded.source,
-			updated_at = excluded.updated_at`,
+			updated_at = excluded.updated_at
+		`+workflowRunUpsertGuard,
 		r.RunID, r.Repo, r.Name, r.Status, r.Conclusion, r.Event, r.HeadBranch, r.Source, r.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("upsert workflow run: %w", err)
 	}
 	return nil
 }
+
+// workflowRunUpsertGuard is the WHERE clause on UpsertWorkflowRun's conflict
+// update. It accepts a write when any of the following holds:
+//
+//  1. The incoming observation is newer than the stored one. Fresher
+//     information always wins, which covers normal state progression.
+//  2. The stored run is still active (queued/in_progress). There is no
+//     terminal state to lose, so an equal-or-older write is harmless — this
+//     also keeps repeated polls of an unchanged run idempotent.
+//  3. The incoming write is itself a completion. A terminal state with a real
+//     conclusion is strictly more informative than what it replaces, so a
+//     delayed completion webhook can still correct a row that
+//     CloseStaleActiveRuns already closed as "unknown" — those closes record
+//     the observation time (now), not GitHub's earlier updated_at, and would
+//     otherwise permanently outrank the webhook that explains them.
+//
+// Everything else is a stale write that would move the run backwards — most
+// importantly an in-flight poll sweep reporting queued/in_progress for a run
+// that has since completed — and is dropped.
+const workflowRunUpsertGuard = `
+		WHERE excluded.updated_at > workflow_runs.updated_at
+			OR workflow_runs.status IN ('queued', 'in_progress')
+			OR excluded.status = 'completed'`
 
 // CloseStaleActiveRuns marks latest queued/in_progress runs with an
 // "unknown" status when a successful active-run sweep no longer sees them.
@@ -638,12 +671,17 @@ func (s *Store) RecordRunnerSnapshot(ctx context.Context, r RunnerSnapshot) erro
 
 // LatestRunnerSnapshots returns the most recent snapshot for every runner
 // group.
+//
+// The per-group maximum is resolved first, against the covering
+// (group_name, id) index, and only the resulting handful of ids are looked up
+// in the table. The equivalent correlated subquery (matching r1.id against a
+// MAX over r2) instead scans every row in runner_snapshots, which is an
+// append-only table with no retention: at a year of snapshots that scan takes
+// well over a second, on an endpoint the dashboard polls every 10 seconds.
 func (s *Store) LatestRunnerSnapshots(ctx context.Context) ([]RunnerSnapshot, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT group_name, total, busy, idle, captured_at FROM runner_snapshots r1
-		WHERE r1.id = (
-			SELECT MAX(r2.id) FROM runner_snapshots r2 WHERE r2.group_name = r1.group_name
-		)
+		SELECT group_name, total, busy, idle, captured_at FROM runner_snapshots
+		WHERE id IN (SELECT MAX(id) FROM runner_snapshots GROUP BY group_name)
 		ORDER BY group_name`)
 	if err != nil {
 		return nil, fmt.Errorf("query latest runner snapshots: %w", err)
