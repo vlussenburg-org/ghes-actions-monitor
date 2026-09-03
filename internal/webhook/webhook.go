@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/vlussenburg-org/ghes-actions-monitor/internal/store"
@@ -35,6 +36,12 @@ type Handler struct {
 	Logger *slog.Logger
 	// Now allows tests to control the observed time; defaults to time.Now.
 	Now func() time.Time
+
+	// lastSnapshotMinute holds the unix-minute of the most recent queue-depth
+	// snapshot, used to coalesce the expensive per-webhook recomputation down
+	// to at most once per wall-clock minute. Accessed atomically across
+	// concurrent deliveries.
+	lastSnapshotMinute atomic.Int64
 }
 
 // workflowRunPayload is the subset of the workflow_run webhook event this
@@ -120,21 +127,43 @@ func (h *Handler) handleWorkflowRun(ctx context.Context, body []byte, w http.Res
 		http.Error(w, "failed to record event", http.StatusInternalServerError)
 		return
 	}
+
+	// Recording the run's state above is the delivery's critical work and is
+	// now durable. The queue-depth snapshot is only a per-minute time series
+	// for the trend chart, so recomputing it on every delivery is wasteful:
+	// QueueDepth scans the latest state of every run, and under a webhook storm
+	// those full scans stack up, exhaust the request's time budget, and fail
+	// the delivery — causing GitHub to retry and, worse, the run state we just
+	// stored to look lost. Coalesce the computation to at most once per
+	// wall-clock minute (the snapshot's own bucket granularity) and never fail
+	// the delivery on a snapshot error.
+	h.maybeSnapshotQueueDepth(ctx, capturedAt)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// maybeSnapshotQueueDepth recomputes and records the queue-depth snapshot at
+// most once per wall-clock minute across all concurrent deliveries. The first
+// delivery to observe a new minute claims it via CAS and does the work; the
+// rest skip the expensive QueueDepth scan entirely. Snapshot failures are
+// logged but never propagated, since the run state is already persisted and
+// the snapshot only feeds the trend chart.
+func (h *Handler) maybeSnapshotQueueDepth(ctx context.Context, capturedAt time.Time) {
+	minute := capturedAt.UTC().Truncate(time.Minute).Unix()
+	prev := h.lastSnapshotMinute.Load()
+	if prev == minute || !h.lastSnapshotMinute.CompareAndSwap(prev, minute) {
+		return
+	}
 	depth, err := h.Store.QueueDepth(ctx)
 	if err != nil {
 		h.logger().Error("failed to compute queue depth after webhook", "error", err)
-		http.Error(w, "failed to record event", http.StatusInternalServerError)
 		return
 	}
 	if err := h.Store.RecordQueueDepthSnapshot(ctx, store.QueueDepthSnapshot{
 		Queued: depth.Queued, InProgress: depth.InProgress, CapturedAt: capturedAt,
 	}); err != nil {
 		h.logger().Error("failed to record queue depth snapshot after webhook", "error", err)
-		http.Error(w, "failed to record event", http.StatusInternalServerError)
-		return
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) now() time.Time {

@@ -249,6 +249,59 @@ func TestServeHTTP_MissingUpdatedAt_UsesNow(t *testing.T) {
 	}
 }
 
+func TestServeHTTP_CoalescesQueueDepthSnapshotsPerMinute(t *testing.T) {
+	fs := &fakeStore{}
+	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	h := &Handler{Store: fs, Now: func() time.Time { return now }}
+
+	deliver := func(runID int) {
+		payload := map[string]any{
+			"action":       "queued",
+			"workflow_run": map[string]any{"id": runID, "status": "queued"},
+			"repository":   map[string]any{"full_name": "acme/widgets"},
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(string(body)))
+		req.Header.Set("X-GitHub-Event", "workflow_run")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("run %d: expected 200, got %d", runID, rec.Code)
+		}
+	}
+
+	deliver(1)                      // 12:00:00 -> snapshot
+	now = now.Add(30 * time.Second) // 12:00:30 -> same minute, skip
+	deliver(2)
+	now = now.Add(40 * time.Second) // 12:01:10 -> new minute, snapshot
+	deliver(3)
+
+	if len(fs.runs) != 3 {
+		t.Fatalf("expected all 3 runs stored, got %d", len(fs.runs))
+	}
+	if len(fs.snapshots) != 2 {
+		t.Fatalf("expected 2 snapshots (one per wall-clock minute), got %d", len(fs.snapshots))
+	}
+}
+
+func TestServeHTTP_SnapshotFailureDoesNotFailDelivery(t *testing.T) {
+	fs := &fakeStore{queueDepthErr: errors.New("scan timeout")}
+	h := &Handler{Store: fs}
+
+	body := workflowRunBody(t)
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(string(body)))
+	req.Header.Set("X-GitHub-Event", "workflow_run")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 despite queue-depth error, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(fs.runs) != 1 {
+		t.Fatalf("expected run to be stored even when snapshot fails, got %d", len(fs.runs))
+	}
+}
+
 func TestValidSignature_MalformedHex(t *testing.T) {
 	if validSignature("secret", []byte("body"), "sha256=not-hex!!") {
 		t.Error("expected false for malformed hex signature")
